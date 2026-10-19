@@ -20,6 +20,7 @@ services:
       ASR_MODEL: ${ASR_MODEL:-base}
       ASR_DEVICE: ${ASR_DEVICE:-cpu}
       VISUAL_PROVIDER: ${VISUAL_PROVIDER:-pexels}
+      REQUIRE_STOCK_FOOTAGE: ${REQUIRE_STOCK_FOOTAGE:-true}
       PEXELS_API_KEY: ${PEXELS_API_KEY:-}
       TORCH_HOME: /service/data/model-cache
       MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-600}

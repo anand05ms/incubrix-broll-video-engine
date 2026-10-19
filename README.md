@@ -4,9 +4,9 @@ An asynchronous FastAPI service that accepts a script, an audio URL, or an uploa
 
 ## Current scope and limitations
 
-Pexels stock search is the default visual source when `PEXELS_API_KEY` is configured. Results are filtered by clip-page title overlap, then the local OpenCLIP ViT-B/32 model scores three sampled frames against the narration and visual hint. Clips below cosine similarity `0.20` are rejected, and clip IDs are not reused within a job. This automated gate is a useful relevance check, not a replacement for the human-rated 85% evaluation.
+Pexels stock search is the default visual source and requires `PEXELS_API_KEY`. Results are filtered by clip-page title overlap, then the local OpenCLIP ViT-B/32 model scores three sampled frames against the narration and visual hint. Clips below cosine similarity `0.20` are rejected, and clip IDs are not reused within a job. This automated gate is a useful relevance check, not a replacement for the human-rated 85% evaluation. `REQUIRE_STOCK_FOOTAGE=true` (the default) fails a job when suitable stock footage cannot be selected rather than silently producing a slide-like illustration. Set it to `false` only for a clearly disclosed local illustration preview.
 
-If stock search is unavailable, returns no sufficiently matching title, or no clip passes the frame score, the scene falls back to a procedural illustration. The source, licence, attribution, clip link, AI-generation disclosure status, selection reason, and automated relevance estimate are included in `timeline.json`. The UI shows Pexels and photographer credits for stock results. OpenCLIP does not verify watermarks, safety, or possible AI-generated source footage; review those before publication. The model weights are downloaded on the first stock-scoring run and cached under the data directory.
+With `REQUIRE_STOCK_FOOTAGE=false`, unavailable or insufficiently relevant stock falls back to a procedural illustration; the default `true` setting fails the job instead. The source, licence, attribution, clip link, AI-generation disclosure status, selection reason, and automated relevance estimate are included in `timeline.json`. The UI shows Pexels and photographer credits for stock results. OpenCLIP does not verify watermarks, safety, or possible AI-generated source footage; review those before publication. The model weights are downloaded on the first stock-scoring run and cached under the data directory.
 
 Scripts use local eSpeak narration in the container. Audio-only jobs use local faster-whisper transcription; its model is downloaded on first use. Tests use the mock TTS provider and need no API credentials. The Pexels API is optional for local tests but required to exercise stock retrieval.
 
@@ -15,6 +15,12 @@ Scripts use local eSpeak narration in the container. Audio-only jobs use local f
 ### Run locally on Windows
 
 Python 3.12 and FFmpeg/FFprobe must be installed and available on `PATH`. The local vision extra installs PyTorch/OpenCLIP; its model weights are downloaded the first time a stock clip is scored.
+
+Create a free Pexels API key and set it in the same PowerShell session before starting the app:
+
+```powershell
+$env:PEXELS_API_KEY = "YOUR_PEXELS_API_KEY"
+```
 
 ```powershell
 python -m pip install -e ".[test,asr,vision]"
@@ -31,7 +37,7 @@ Open `http://127.0.0.1:8000` for the video creator or `http://127.0.0.1:8000/doc
 ### Run with Docker Compose
 
 1. Install Docker Compose.
-2. Copy `.env.example` to `.env`; set `PEXELS_API_KEY` to enable stock search, and replace the development MinIO credentials.
+2. Copy `.env.example` to `.env`; set `PEXELS_API_KEY` (required for video jobs with the default stock-required setting), and replace the development MinIO credentials.
 3. Run `docker compose up --build`.
 4. Open `http://localhost:8000`.
 
@@ -90,6 +96,7 @@ All runtime settings are in `.env.example`. Important settings include:
 |---|---|
 | `TTS_PROVIDER` | `espeak`, `pyttsx3`, or test-only `mock` |
 | `VISUAL_PROVIDER` | `pexels` (default) or `procedural` |
+| `REQUIRE_STOCK_FOOTAGE` | `true` (default) fails instead of substituting procedural artwork when stock is unavailable |
 | `PEXELS_API_KEY` | Pexels API key; required for stock results |
 | `ASR_PROVIDER`, `ASR_MODEL`, `ASR_DEVICE` | Local faster-whisper transcription |
 | `STORAGE_BACKEND` | `minio` or `local` |
@@ -97,7 +104,7 @@ All runtime settings are in `.env.example`. Important settings include:
 | `WORKER_COUNT` | Concurrent in-process render jobs |
 | `MIN_SCENE_SECONDS` | Groups adjacent sentences when necessary to avoid very short shots |
 
-API error codes include `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_REUSED`, `INVALID_REQUEST`, `INVALID_JSON`, `UNSUPPORTED_CONTENT_TYPE`, `UNSUPPORTED_AUDIO_TYPE`, `INVALID_AUDIO_URL`, `INVALID_AUDIO`, `AUDIO_SOURCE_UNAVAILABLE`, `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG`, `MEDIA_TOOL_UNAVAILABLE`, `MEDIA_TOOL_TIMEOUT`, `MEDIA_PROCESSING_FAILED`, `TTS_UNAVAILABLE`, `TTS_FAILED`, `TTS_PROVIDER_UNSUPPORTED`, `ASR_UNAVAILABLE`, `ASR_PROVIDER_UNSUPPORTED`, `TRANSCRIPTION_FAILED`, `TRANSCRIPTION_EMPTY`, `EMPTY_SCENES`, `VISUAL_PROVIDER_UNSUPPORTED`, `JOB_PROCESSING_FAILED`, `JOB_NOT_FOUND`, `ARTIFACT_NOT_FOUND`, `ARTIFACT_STORAGE_UNAVAILABLE`, `NOT_READY`, and `INTERNAL_ERROR`.
+API error codes include `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_REUSED`, `INVALID_REQUEST`, `INVALID_JSON`, `UNSUPPORTED_CONTENT_TYPE`, `UNSUPPORTED_AUDIO_TYPE`, `INVALID_AUDIO_URL`, `INVALID_AUDIO`, `AUDIO_SOURCE_UNAVAILABLE`, `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG`, `MEDIA_TOOL_UNAVAILABLE`, `MEDIA_TOOL_TIMEOUT`, `MEDIA_PROCESSING_FAILED`, `TTS_UNAVAILABLE`, `TTS_FAILED`, `TTS_PROVIDER_UNSUPPORTED`, `ASR_UNAVAILABLE`, `ASR_PROVIDER_UNSUPPORTED`, `TRANSCRIPTION_FAILED`, `TRANSCRIPTION_EMPTY`, `EMPTY_SCENES`, `VISUAL_PROVIDER_UNSUPPORTED`, `STOCK_FOOTAGE_UNAVAILABLE`, `JOB_PROCESSING_FAILED`, `JOB_NOT_FOUND`, `ARTIFACT_NOT_FOUND`, `ARTIFACT_STORAGE_UNAVAILABLE`, `NOT_READY`, and `INTERNAL_ERROR`.
 
 ## Artifacts and rights
 

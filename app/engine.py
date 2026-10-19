@@ -568,9 +568,17 @@ def process_job(
             visual = None
             scene_words = {word.lower() for word in WORD_RE.findall(scene["text"])}
             if settings.visual_provider == "pexels" and scene_words & SENSITIVE_SCENE_TERMS:
-                warnings.append(f"Stock search skipped for sensitive scene {i}; used a procedural illustration.")
+                message = f"Stock search skipped for sensitive scene {i}; human-selected footage is required."
+                if settings.require_stock_footage:
+                    raise EngineError("STOCK_FOOTAGE_UNAVAILABLE", message)
+                warnings.append(f"{message} Used a procedural illustration.")
             elif settings.visual_provider == "pexels" and request_data.get("avoid"):
-                warnings.append(f"Stock search skipped for scene {i} because avoid constraints cannot be verified automatically; used a procedural illustration.")
+                message = (
+                    f"Stock search skipped for scene {i} because avoid constraints cannot be verified automatically."
+                )
+                if settings.require_stock_footage:
+                    raise EngineError("STOCK_FOOTAGE_UNAVAILABLE", message)
+                warnings.append(f"{message} Used a procedural illustration.")
             elif settings.visual_provider == "pexels":
                 try:
                     stock_path = work_dir / f"stock_{i:03}.mp4"
@@ -578,8 +586,19 @@ def process_job(
                     if metadata:
                         visual = {"kind": "stock", "path": stock_path, "metadata": metadata}
                     else:
-                        warnings.append(f"No Pexels result for scene {i}; used an original procedural illustration.")
+                        message = f"No sufficiently relevant Pexels footage was found for scene {i}."
+                        if settings.require_stock_footage:
+                            raise EngineError("STOCK_FOOTAGE_UNAVAILABLE", message)
+                        warnings.append(f"{message} Used an original procedural illustration.")
+                except EngineError:
+                    raise
                 except Exception as exc:
+                    if settings.require_stock_footage:
+                        raise EngineError(
+                            "STOCK_FOOTAGE_UNAVAILABLE",
+                            f"Pexels could not provide verified footage for scene {i}: {exc}",
+                            retryable=True,
+                        ) from exc
                     warnings.append(f"Pexels unavailable for scene {i}; used an original procedural illustration ({exc}).")
             elif settings.visual_provider != "procedural":
                 raise EngineError("VISUAL_PROVIDER_UNSUPPORTED", f"Unsupported VISUAL_PROVIDER: {settings.visual_provider}")
@@ -715,6 +734,7 @@ def process_job(
                 "captions": captions_options,
                 "fps": 30,
                 "minimum_visual_similarity": MIN_VISUAL_SIMILARITY,
+                "require_stock_footage": settings.require_stock_footage,
             },
             "seed": None,
             "timings": {"duration_seconds": round(duration, 3), "processing_seconds": elapsed},

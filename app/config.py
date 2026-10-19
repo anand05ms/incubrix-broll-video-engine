@@ -12,6 +12,7 @@ class Settings:
     tts_provider: str
     tts_voice: str
     visual_provider: str
+    require_stock_footage: bool
     pexels_api_key: str
     asr_provider: str
     asr_model: str
@@ -39,6 +40,7 @@ class Settings:
             tts_provider=os.getenv("TTS_PROVIDER", "espeak"),
             tts_voice=os.getenv("TTS_VOICE", "en"),
             visual_provider=os.getenv("VISUAL_PROVIDER", "pexels"),
+            require_stock_footage=os.getenv("REQUIRE_STOCK_FOOTAGE", "true").lower() == "true",
             pexels_api_key=os.getenv("PEXELS_API_KEY", ""),
             asr_provider=os.getenv("ASR_PROVIDER", "faster-whisper"),
             asr_model=os.getenv("ASR_MODEL", "base"),

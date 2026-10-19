@@ -25,6 +25,7 @@ def make_settings(tmp_path):
         tts_provider="mock",
         tts_voice="en",
         visual_provider="procedural",
+        require_stock_footage=True,
         pexels_api_key="",
         asr_provider="faster-whisper",
         asr_model="base",
@@ -48,6 +49,23 @@ def test_pexels_is_default_visual_provider(monkeypatch, tmp_path):
     monkeypatch.delenv("DATABASE_PATH", raising=False)
 
     assert Settings.from_env().visual_provider == "pexels"
+    assert Settings.from_env().require_stock_footage is True
+
+
+def test_stock_required_job_fails_instead_of_returning_illustrations(monkeypatch, tmp_path):
+    settings = replace(make_settings(tmp_path), visual_provider="pexels", pexels_api_key="test-key")
+    monkeypatch.setattr("app.engine.search_pexels_clip", lambda *args: None)
+    app = create_app(settings, JobDatabase(settings.database_path), LocalStorage(settings.data_dir / "objects"))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/broll/jobs",
+            json={"script": "A neighborhood garden grows in the morning sun."},
+            headers={"Idempotency-Key": "stock-required"},
+        )
+        assert response.status_code == 202
+        completed = wait_for_status(client, response.json()["job_id"], "failed")
+        assert completed["error"]["code"] == "STOCK_FOOTAGE_UNAVAILABLE"
+        assert "sufficiently relevant Pexels footage" in completed["error"]["message"]
 
 
 def wait_for_status(client, job_id, expected, timeout=10):
@@ -223,7 +241,7 @@ def test_missing_key_and_empty_script_return_json_errors(tmp_path):
 
 
 def test_stock_provider_failure_falls_back_and_is_disclosed(tmp_path):
-    settings = replace(make_settings(tmp_path), visual_provider="pexels")
+    settings = replace(make_settings(tmp_path), visual_provider="pexels", require_stock_footage=False)
     app = create_app(settings, JobDatabase(settings.database_path), LocalStorage(settings.data_dir / "objects"))
     with TestClient(app) as client:
         response = client.post(
