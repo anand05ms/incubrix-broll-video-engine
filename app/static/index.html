@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b111d">
+    <meta name="description" content="Create a narrated, captioned B-roll video from a script or audio.">
+    <title>IncuBrix Studio — B-roll video maker</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="IncuBrix Studio home">
+        <span class="brand-mark" aria-hidden="true">i</span>
+        <span>incubrix<span class="brand-light">studio</span></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-link" href="/docs">API docs <span aria-hidden="true">↗</span></a>
+        <span class="status-pill"><span class="status-dot"></span> Local engine</span>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow"><span class="eyebrow-line"></span> SCRIPT TO STORY</p>
+        <h1>Give your words<br>the <span class="gradient-text">visual story</span> they deserve.</h1>
+        <p class="hero-copy">Turn a script or voiceover into a narrated video with scene visuals, captions, and source notes.</p>
+      </section>
+
+      <section class="workspace" aria-label="Video creation workspace">
+        <form id="job-form" class="creator-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">CREATE A VIDEO</p>
+              <h2>Start with your story</h2>
+            </div>
+            <span class="step-label"><span class="step-number">01</span> INPUT</span>
+          </div>
+
+          <fieldset class="mode-picker">
+            <legend class="sr-only">Choose an input type</legend>
+            <label class="mode-option selected" data-mode-card="script">
+              <input type="radio" name="input-mode" value="script" checked>
+              <span class="mode-icon" aria-hidden="true">Aa</span>
+              <span><strong>Write a script</strong><small>We’ll create the narration</small></span>
+            </label>
+            <label class="mode-option" data-mode-card="audio">
+              <input type="radio" name="input-mode" value="audio">
+              <span class="mode-icon audio-icon" aria-hidden="true">♫</span>
+              <span><strong>Upload a voiceover</strong><small>MP3, WAV or M4A</small></span>
+            </label>
+          </fieldset>
+
+          <div id="script-panel" class="input-panel">
+            <label for="script" class="field-label">YOUR SCRIPT <span class="optional">— English works best</span></label>
+            <textarea id="script" name="script" rows="6" maxlength="30000" placeholder="Saving money starts with a clear plan. Track your spending and choose one small goal to reach this month." required></textarea>
+            <div class="field-footer"><span id="script-help">A few clear sentences help us build your scenes.</span><span id="char-count">0 / 30,000</span></div>
+          </div>
+
+          <div id="audio-panel" class="input-panel hidden">
+            <label for="audio-file" class="field-label">YOUR AUDIO <span class="optional">— up to 10 minutes</span></label>
+            <label class="upload-zone" for="audio-file" id="upload-zone">
+              <input id="audio-file" name="audio_file" type="file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/mp4">
+              <span class="upload-icon" aria-hidden="true">↑</span>
+              <span class="upload-title" id="upload-title">Choose an audio file</span>
+              <span class="upload-hint" id="upload-hint">MP3, WAV or M4A · 50 MB max</span>
+            </label>
+            <label for="transcript" class="field-label transcript-label">TRANSCRIPT <span class="optional">— optional; leave blank to transcribe locally</span></label>
+            <textarea id="transcript" rows="3" maxlength="30000" placeholder="Paste the voiceover transcript if you have one."></textarea>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="options-heading">
+            <div>
+              <p class="eyebrow">MAKE IT YOURS</p>
+              <h3>Video settings</h3>
+            </div>
+          </div>
+
+          <fieldset class="ratio-fieldset">
+            <legend class="field-label">VIDEO FORMAT</legend>
+            <div class="ratio-options">
+              <label class="ratio-option"><input type="checkbox" name="aspect_ratios" value="16:9" checked><span class="ratio-icon landscape" aria-hidden="true"></span><span>Landscape</span><small>16:9</small></label>
+              <label class="ratio-option"><input type="checkbox" name="aspect_ratios" value="9:16"><span class="ratio-icon portrait" aria-hidden="true"></span><span>Portrait</span><small>9:16</small></label>
+              <label class="ratio-option"><input type="checkbox" name="aspect_ratios" value="1:1"><span class="ratio-icon square" aria-hidden="true"></span><span>Square</span><small>1:1</small></label>
+            </div>
+          </fieldset>
+
+          <div class="settings-row">
+            <div class="setting">
+              <label for="style" class="field-label">VISUAL STYLE <span class="optional">— optional</span></label>
+              <input id="style" type="text" maxlength="500" placeholder="Bright, modern, real-world">
+            </div>
+            <div class="setting">
+              <label for="avoid" class="field-label">AVOID <span class="optional">— optional</span></label>
+              <input id="avoid" type="text" maxlength="500" placeholder="Faces, alcohol">
+            </div>
+          </div>
+
+          <div class="check-row">
+            <label class="toggle-label"><input id="burn-in" type="checkbox" checked><span class="switch"></span><span><strong>Burn captions into video</strong><small>Always include a downloadable SRT file.</small></span></label>
+          </div>
+
+          <div class="notice">
+            <span class="notice-icon" aria-hidden="true">i</span>
+            <p><strong>Stock footage is preferred when configured.</strong> Pexels candidates are matched to narration with local OpenCLIP frame scoring; unmatched or unavailable results use clearly labeled procedural illustrations. Review scene relevance and safety before publishing. Don’t submit sensitive audio to a public demo.</p>
+          </div>
+
+          <button id="submit-button" class="primary-button" type="submit">
+            <span id="submit-label">Create my video</span><span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+          <p class="privacy-note">Your upload is processed by this server. Avoid confidential or personal information.</p>
+        </form>
+
+        <aside class="result-column" aria-label="Job status and results">
+          <section id="progress-card" class="result-card progress-card">
+            <div class="card-heading result-heading">
+              <div><p class="eyebrow">YOUR WORKSPACE</p><h2 id="result-title">Your next story starts here</h2></div>
+              <span id="result-state" class="state-badge idle">READY</span>
+            </div>
+            <div id="empty-state" class="empty-state">
+              <div class="preview-art" aria-hidden="true">
+                <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span>
+                <span class="preview-sun"></span><span class="preview-hill hill-back"></span><span class="preview-hill hill-front"></span>
+                <span class="preview-play">▶</span>
+                <span class="preview-caption">YOUR STORY, IN MOTION</span>
+              </div>
+              <p>Your video and project files will appear here when the render is complete.</p>
+            </div>
+            <div id="job-state" class="job-state hidden" aria-live="polite">
+              <div class="progress-labels"><span id="progress-message">Preparing your project…</span><span id="progress-percent">0%</span></div>
+              <div class="progress-track" role="progressbar" aria-label="Video render progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
+              <p id="job-id" class="job-id"></p>
+              <div id="error-box" class="error-box hidden" role="alert"></div>
+              <div id="warnings" class="warnings hidden"></div>
+              <div id="credits" class="credits hidden"></div>
+              <div id="downloads" class="downloads hidden"></div>
+            </div>
+          </section>
+
+          <section class="info-card">
+            <p class="eyebrow">THE PROCESS</p>
+            <div class="process-step"><span class="process-number">01</span><span><strong>Understand your story</strong><small>Scenes are planned from your script or transcript.</small></span></div>
+            <div class="process-step"><span class="process-number">02</span><span><strong>Build each scene</strong><small>Original visuals are matched and timed to narration.</small></span></div>
+            <div class="process-step"><span class="process-number">03</span><span><strong>Export your video</strong><small>Download your video, captions and provenance files.</small></span></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <a class="brand footer-brand" href="/"><span class="brand-mark" aria-hidden="true">i</span><span>incubrix<span class="brand-light">studio</span></span></a>
+      <span>Local demo · Free, open-source components</span>
+      <a href="/docs">Developer API <span aria-hidden="true">↗</span></a>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "script": "A neighborhood bakery prepares bread before sunrise. Bakers knead dough, shape loaves, and slide trays into a hot oven. Customers choose warm bread at the counter later that morning.",
+  "aspect_ratios": ["16:9"],
+  "captions": {"burn_in": false, "srt": true}
+}

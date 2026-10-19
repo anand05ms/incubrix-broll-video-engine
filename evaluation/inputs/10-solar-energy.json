@@ -1,0 +1,5 @@
+{
+  "script": "Homes can use sunlight to generate electricity. Installers secure solar panels on a residential rooftop while clouds move across the sky. An inverter converts the panel output into power used by household appliances.",
+  "aspect_ratios": ["16:9"],
+  "captions": {"burn_in": false, "srt": true}
+}

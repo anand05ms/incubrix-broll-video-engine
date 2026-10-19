@@ -1,0 +1,235 @@
+openapi: 3.1.0
+info:
+  title: IncuBrix Script and Voiceover to B-roll Video Engine
+  version: 0.1.0
+servers:
+  - url: http://localhost:8000
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: Liveness check
+  /ready:
+    get:
+      operationId: readiness
+      responses:
+        "200":
+          description: Database and object storage are available
+        "503":
+          description: A required dependency is unavailable
+  /api/v1/broll/jobs:
+    post:
+      operationId: createBrollJob
+      summary: Submit a script, audio URL, or uploaded audio file for rendering
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - in: header
+          name: X-Correlation-Id
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio_file:
+                  type: string
+                  format: binary
+                audio_url:
+                  type: string
+                  format: uri
+                script:
+                  type: string
+                scenes:
+                  type: string
+                  description: JSON array of scene objects
+                aspect_ratios:
+                  type: string
+                  description: JSON array or comma-separated list
+                voice:
+                  type: string
+                style:
+                  type: string
+                avoid:
+                  type: string
+                  description: JSON array of strings
+                captions:
+                  type: string
+                  description: JSON object with burn_in and srt flags
+              anyOf:
+                - required: [audio_file]
+                - required: [audio_url]
+                - required: [script]
+                - required: [scenes]
+      responses:
+        "202":
+          description: Job accepted or idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "415":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/v1/jobs/{job_id}:
+    get:
+      operationId: getJob
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Current job status and result links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/jobs/{job_id}/artifacts/{filename}:
+    get:
+      operationId: getArtifact
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Video, captions, timeline, or manifest file
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+            application/x-subrip:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/Error"
+components:
+  parameters:
+    JobId:
+      in: path
+      name: job_id
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Scene:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        visual_hint:
+          type: [string, "null"]
+    JobRequest:
+      type: object
+      anyOf:
+        - required: [audio_url]
+        - required: [script]
+        - required: [scenes]
+      properties:
+        audio_url:
+          type: [string, "null"]
+          format: uri
+        script:
+          type: [string, "null"]
+          minLength: 1
+        scenes:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/Scene"
+        voice:
+          type: [string, "null"]
+        aspect_ratios:
+          type: array
+          items:
+            type: string
+            enum: ["16:9", "9:16", "1:1"]
+        style:
+          type: [string, "null"]
+        avoid:
+          type: array
+          items:
+            type: string
+        captions:
+          type: object
+          properties:
+            burn_in:
+              type: boolean
+              default: false
+            srt:
+              type: boolean
+              default: true
+    Job:
+      type: object
+      required: [job_id, status, progress]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        result:
+          type: [object, "null"]
+        error:
+          type: [object, "null"]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable, details]
+          properties:
+            code:
+              type: string
+              pattern: "^[A-Z0-9_]+$"
+            message:
+              type: string
+            retryable:
+              type: boolean
+            details:
+              type: [object, array, string, "null"]
+  responses:
+    Error:
+      description: Structured API error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

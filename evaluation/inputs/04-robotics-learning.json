@@ -1,0 +1,5 @@
+{
+  "script": "Students learn problem solving by building a small robot. They connect sensors and motors at a classroom workbench, then write code on a laptop. The robot follows a line across the floor while the team celebrates.",
+  "aspect_ratios": ["16:9"],
+  "captions": {"burn_in": false, "srt": true}
+}

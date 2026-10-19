@@ -1,0 +1,72 @@
+services:
+  api:
+    build: .
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      DATA_DIR: /service/data
+      DATABASE_PATH: /service/data/jobs.sqlite3
+      FFMPEG_PATH: ffmpeg
+      FFPROBE_PATH: ffprobe
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-minio}
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_BUCKET: ${S3_BUCKET:-broll-results}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-localminio}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-localminio-change-me}
+      S3_SECURE: ${S3_SECURE:-false}
+      TTS_PROVIDER: ${TTS_PROVIDER:-espeak}
+      TTS_VOICE: ${TTS_VOICE:-en}
+      ASR_PROVIDER: ${ASR_PROVIDER:-faster-whisper}
+      ASR_MODEL: ${ASR_MODEL:-base}
+      ASR_DEVICE: ${ASR_DEVICE:-cpu}
+      VISUAL_PROVIDER: ${VISUAL_PROVIDER:-pexels}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      TORCH_HOME: /service/data/model-cache
+      MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-600}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      WORKER_COUNT: ${WORKER_COUNT:-2}
+      MIN_SCENE_SECONDS: ${MIN_SCENE_SECONDS:-2.5}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - broll-data:/service/data
+    depends_on:
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-07T23-21-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-localminio-change-me}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+  tests:
+    build:
+      context: .
+      target: tests
+    profiles: ["test"]
+    command: ["python", "-m", "pytest"]
+    environment:
+      DATA_DIR: /service/test-data
+      DATABASE_PATH: /service/test-data/jobs.sqlite3
+      TTS_PROVIDER: mock
+      STORAGE_BACKEND: local
+      FFMPEG_PATH: ffmpeg
+      FFPROBE_PATH: ffprobe
+    volumes:
+      - .:/service
+
+volumes:
+  broll-data:
+  minio-data:
