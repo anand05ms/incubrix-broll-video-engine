@@ -17,10 +17,8 @@ const progressText = document.querySelector("#progress-message");
 const progressPercent = document.querySelector("#progress-percent");
 const progressBar = document.querySelector("#progress-bar");
 const progressTrack = document.querySelector(".progress-track");
-const jobIdText = document.querySelector("#job-id");
-const errorBox = document.querySelector("#error-box");
-const warningsBox = document.querySelector("#warnings");
-const creditsBox = document.querySelector("#credits");
+const friendlyMessage = document.querySelector("#friendly-message");
+const videoPreview = document.querySelector("#video-preview");
 const downloadsBox = document.querySelector("#downloads");
 const charCount = document.querySelector("#char-count");
 
@@ -54,94 +52,18 @@ function setState(state, label) {
   stateBadge.textContent = label;
 }
 
-function safeErrorMessage(payload, fallback) {
-  return payload?.error?.message || fallback;
-}
-
-function addDownload(name, url) {
+function addDownload(labelText, filename, url) {
   const link = document.createElement("a");
   link.className = "download-link";
   link.href = url;
-  link.setAttribute("download", name);
+  link.setAttribute("download", filename);
   const label = document.createElement("span");
-  label.textContent = name;
+  label.textContent = labelText;
   const arrow = document.createElement("span");
   arrow.textContent = "↓";
   arrow.setAttribute("aria-hidden", "true");
   link.append(label, arrow);
   downloadsBox.append(link);
-}
-
-function showWarnings(items) {
-  warningsBox.replaceChildren();
-  if (!items?.length) {
-    warningsBox.classList.add("hidden");
-    return;
-  }
-  const heading = document.createElement("p");
-  heading.textContent = "A note about this result:";
-  warningsBox.append(heading);
-  for (const warning of items) {
-    const line = document.createElement("p");
-    line.textContent = warning;
-    warningsBox.append(line);
-  }
-  warningsBox.classList.remove("hidden");
-}
-
-function addExternalLink(parent, label, href) {
-  let url;
-  try {
-    url = new URL(href);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "https:") return false;
-  const link = document.createElement("a");
-  link.href = url.href;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = label;
-  parent.append(link);
-  return true;
-}
-
-function showCredits(timeline) {
-  creditsBox.replaceChildren();
-  const stockScenes = (timeline?.scenes || []).filter(
-    (scene) => scene.clip?.source && scene.clip.source !== "procedural-illustration",
-  );
-  if (!stockScenes.length) {
-    creditsBox.classList.add("hidden");
-    return;
-  }
-
-  const heading = document.createElement("h3");
-  heading.textContent = "Footage credits";
-  creditsBox.append(heading);
-  for (const scene of stockScenes) {
-    const line = document.createElement("p");
-    line.append(document.createTextNode(`${scene.scene_id}: ${scene.clip.source} · `));
-    if (!addExternalLink(
-      line,
-      scene.clip.photographer_name || scene.clip.attribution || "Contributor",
-      scene.clip.photographer_url || scene.clip.source_url || "",
-    )) {
-      line.append(document.createTextNode(scene.clip.photographer_name || scene.clip.attribution || "Contributor"));
-    }
-    line.append(document.createTextNode(" · "));
-    if (!addExternalLink(line, "clip page", scene.clip.source_url || "")) {
-      line.append(document.createTextNode("clip page unavailable"));
-    }
-    if (scene.clip.license) {
-      line.append(document.createTextNode(" · License: "));
-      if (!addExternalLink(line, scene.clip.license, scene.clip.license_url || "")) {
-        line.append(document.createTextNode(scene.clip.license));
-      }
-    }
-    creditsBox.append(line);
-  }
-  creditsBox.classList.remove("hidden");
 }
 
 async function pollJob(jobId) {
@@ -150,7 +72,7 @@ async function pollJob(jobId) {
     const response = await fetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(safeErrorMessage(payload, "Could not read job status."));
+      throw new Error("Could not read job status.");
     }
     setProgress(payload.progress);
     if (payload.status === "queued") {
@@ -168,41 +90,30 @@ async function pollJob(jobId) {
       progressText.textContent = "Your video is ready.";
       resultTitle.textContent = "Your story is ready";
       setState("success", "COMPLETE");
-      showWarnings(payload.result?.warnings || []);
-      creditsBox.classList.add("hidden");
-      const timelineUrl = payload.result?.files?.["timeline.json"];
-      if (timelineUrl) {
-        try {
-          const timelineResponse = await fetch(timelineUrl);
-          if (!timelineResponse.ok) throw new Error(`Timeline request failed (${timelineResponse.status}).`);
-          showCredits(await timelineResponse.json());
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unexpected timeline retrieval error.";
-          showWarnings([...(payload.result?.warnings || []), `Could not load footage credits: ${message}`]);
+      friendlyMessage.classList.add("hidden");
+      downloadsBox.replaceChildren();
+      const files = payload.result?.files || {};
+      const videos = Object.entries(files).filter(([name]) => name.toLowerCase().endsWith(".mp4"));
+      const captions = Object.entries(files).find(([name]) => name.toLowerCase() === "captions.srt");
+      if (videos.length) {
+        videoPreview.src = videos[0][1];
+        videoPreview.classList.remove("hidden");
+        for (const [filename, url] of videos) {
+          const ratio = filename.match(/_(16_9|9_16|1_1)\.mp4$/i)?.[1]?.replaceAll("_", ":");
+          addDownload(ratio ? `Download video · ${ratio}` : "Download video", filename, url);
         }
       }
-      downloadsBox.replaceChildren();
-      for (const [name, url] of Object.entries(payload.result?.files || {})) {
-        addDownload(name, url);
-      }
+      if (captions) addDownload("Download captions", captions[0], captions[1]);
       downloadsBox.classList.remove("hidden");
       submitButton.disabled = false;
       submitLabel.textContent = "Create another video";
       return;
     } else if (payload.status === "failed") {
-      progressText.textContent = "This render could not be completed.";
-      setState("failed", "FAILED");
-      const errorLines = [
-        `${payload.error?.code || "JOB_FAILED"}: ${payload.error?.message || "The job failed."}`,
-      ];
-      const providerAttempts = payload.error?.details?.provider_attempts;
-      if (Array.isArray(providerAttempts)) {
-        for (const attempt of providerAttempts) {
-          errorLines.push(`${attempt.provider}: ${attempt.status} — ${attempt.reason}`);
-        }
-      }
-      errorBox.textContent = errorLines.join("\n");
-      errorBox.classList.remove("hidden");
+      progressText.textContent = "We couldn’t finish this video just now.";
+      resultTitle.textContent = "Let’s give it another try";
+      setState("failed", "TRY AGAIN");
+      friendlyMessage.textContent = "Your story is safe. Please try again in a moment.";
+      friendlyMessage.classList.remove("hidden");
       submitButton.disabled = false;
       submitLabel.textContent = "Try another render";
       return;
@@ -256,10 +167,11 @@ uploadZone.addEventListener("drop", (event) => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  errorBox.classList.add("hidden");
-  warningsBox.classList.add("hidden");
-  creditsBox.classList.add("hidden");
-  creditsBox.replaceChildren();
+  friendlyMessage.classList.add("hidden");
+  videoPreview.pause();
+  videoPreview.removeAttribute("src");
+  videoPreview.load();
+  videoPreview.classList.add("hidden");
   downloadsBox.classList.add("hidden");
   downloadsBox.replaceChildren();
   jobState.classList.remove("hidden");
@@ -276,6 +188,8 @@ form.addEventListener("submit", async (event) => {
   const mode = selectedMode();
   const script = mode === "script" ? scriptArea.value.trim() : transcriptArea.value.trim();
   if (script) body.append("script", script);
+  const language = document.querySelector("#language").value;
+  if (language) body.append("language", language);
   if (mode === "audio") body.append("audio_file", audioInput.files[0]);
   const ratios = [...document.querySelectorAll('input[name="aspect_ratios"]:checked')].map((item) => item.value);
   body.append("aspect_ratios", JSON.stringify(ratios));
@@ -296,17 +210,16 @@ form.addEventListener("submit", async (event) => {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(safeErrorMessage(payload, `Request failed (${response.status}).`));
+      throw new Error("Request could not be started.");
     }
     activeJobId = payload.job_id;
-    jobIdText.textContent = `Job ${payload.job_id}`;
     await pollJob(payload.job_id);
-  } catch (error) {
-    resultTitle.textContent = "We couldn’t start your render";
-    progressText.textContent = "Check your input and try again.";
-    setState("failed", "ERROR");
-    errorBox.textContent = error instanceof Error ? error.message : "Unexpected request error.";
-    errorBox.classList.remove("hidden");
+  } catch {
+    resultTitle.textContent = "Let’s give it another try";
+    progressText.textContent = "We couldn’t start this video just now.";
+    setState("failed", "TRY AGAIN");
+    friendlyMessage.textContent = "Please check your story and try again in a moment.";
+    friendlyMessage.classList.remove("hidden");
     submitButton.disabled = false;
     submitLabel.textContent = "Try again";
   }

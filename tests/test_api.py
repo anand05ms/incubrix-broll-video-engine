@@ -20,18 +20,25 @@ from app.db import JobDatabase
 from app.engine import (
     EngineError,
     _category,
+    _caption_font_name,
+    _captions,
     _create_artwork,
     _fallback_visual_category,
+    _find_espeak_binary,
     _is_visually_representable,
     _render_stock_clip,
     _render_video,
+    _split_script,
     _synthesize,
+    _synthesize_for_language,
+    _espeak_supports_voice,
     _transcribe,
     _validate_rendered_video,
     _validate_rendered_segment,
     _validate_visual_asset,
 )
 from app.main import create_app
+from app.languages import detect_language
 from app.providers import (
     StockProvidersExhausted,
     _call_provider_with_timeout,
@@ -56,6 +63,9 @@ def make_settings(tmp_path):
         ffprobe_path="ffprobe",
         tts_provider="mock",
         tts_voice="en",
+        hindi_tts_voice="hf_alpha",
+        tamil_tts_provider="espeak",
+        tamil_tts_voice="ta",
         visual_provider="procedural",
         visual_provider_order=("pixabay", "openverse", "wikimedia", "internet_archive", "pexels"),
         internet_archive_enabled=True,
@@ -96,6 +106,9 @@ def test_wikimedia_is_default_stock_provider(monkeypatch, tmp_path):
     monkeypatch.delenv("ASR_COMPUTE_TYPE", raising=False)
     monkeypatch.delenv("TTS_PROVIDER", raising=False)
     monkeypatch.delenv("TTS_VOICE", raising=False)
+    monkeypatch.delenv("HINDI_TTS_VOICE", raising=False)
+    monkeypatch.delenv("TAMIL_TTS_PROVIDER", raising=False)
+    monkeypatch.delenv("TAMIL_TTS_VOICE", raising=False)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("DATABASE_PATH", raising=False)
 
@@ -106,6 +119,9 @@ def test_wikimedia_is_default_stock_provider(monkeypatch, tmp_path):
     assert Settings.from_env().groq_model == "openai/gpt-oss-120b"
     assert Settings.from_env().tts_provider == "kokoro"
     assert Settings.from_env().tts_voice == "af_heart"
+    assert Settings.from_env().hindi_tts_voice == "hf_alpha"
+    assert Settings.from_env().tamil_tts_provider == "espeak"
+    assert Settings.from_env().tamil_tts_voice == "ta"
 
 
 def test_settings_load_dotenv_without_overriding_process_environment(monkeypatch, tmp_path):
@@ -130,6 +146,243 @@ def test_settings_load_dotenv_without_overriding_process_environment(monkeypatch
 
     monkeypatch.setenv("PIXABAY_API_KEY", "process-test-key")
     assert Settings.from_env().pixabay_api_key == "process-test-key"
+
+
+def test_language_detection_and_explicit_language_validation():
+    from app.main import JobInput
+
+    assert detect_language("This is an online learning platform.") == "en"
+    assert detect_language("यह एक ऑनलाइन लर्निंग प्लेटफ़ॉर्म है।") == "hi"
+    assert detect_language("இது ஒரு ஆன்லைன் கற்றல் தளம்.") == "ta"
+    assert detect_language("यह platform ऑनलाइन है") == "hi"
+    assert detect_language("இது online கல்வி") == "ta"
+    assert JobInput(script="This is online education.", language="hi").language == "hi"
+    with pytest.raises(ValueError):
+        JobInput(script="English text", language="fr")
+    assert _split_script("पहला वाक्य। दूसरा वाक्य।") == ["पहला वाक्य।", "दूसरा वाक्य।"]
+
+
+def test_existing_english_tts_path_is_unchanged(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    observed = {}
+
+    def synthesize(text, _output, configured, voice):
+        observed.update(text=text, provider=configured.tts_provider, voice=voice)
+
+    monkeypatch.setattr("app.engine._synthesize", synthesize)
+    provider, voice = _synthesize_for_language("English narration.", tmp_path / "voice.wav", settings, "en", None)
+
+    assert (provider, voice) == ("mock", "en")
+    assert observed == {"text": "English narration.", "provider": "mock", "voice": "en"}
+
+
+def test_tamil_tts_uses_separate_configured_provider_and_writes_audio(monkeypatch, tmp_path):
+    import wave
+
+    settings = make_settings(tmp_path)
+    observed = {}
+
+    def synthesize(text, output, configured, voice):
+        observed.update(text=text, provider=configured.tts_provider, voice=voice)
+        with wave.open(str(output), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(b"\x00\x00" * 16000)
+
+    monkeypatch.setattr("app.engine._espeak_supports_voice", lambda _voice: True)
+    monkeypatch.setattr("app.engine._synthesize", synthesize)
+    output = tmp_path / "tamil.wav"
+
+    provider, voice = _synthesize_for_language(
+        "இது ஒரு ஆன்லைன் கற்றல் தளம்.",
+        output,
+        settings,
+        "ta",
+        None,
+    )
+
+    with wave.open(str(output), "rb") as audio:
+        duration = audio.getnframes() / audio.getframerate()
+    assert (provider, voice) == ("espeak", "ta")
+    assert observed == {
+        "text": "இது ஒரு ஆன்லைன் கற்றல் தளம்.",
+        "provider": "espeak",
+        "voice": "ta",
+    }
+    assert duration > 0
+
+
+def test_tamil_tts_unavailable_fails_with_language_error(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr("app.engine._espeak_supports_voice", lambda _voice: False)
+
+    with pytest.raises(EngineError) as error:
+        _synthesize_for_language(
+            "இது ஒரு ஆன்லைன் கற்றல் தளம்.",
+            tmp_path / "missing-tamil.wav",
+            settings,
+            "ta",
+            None,
+        )
+
+    assert error.value.code == "TTS_LANGUAGE_UNAVAILABLE"
+    assert "Tamil narration is not configured" in error.value.message
+
+
+def test_hindi_tts_uses_configured_kokoro_voice(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    observed = {}
+
+    def synthesize(text, _output, configured, voice):
+        observed.update(text=text, provider=configured.tts_provider, voice=voice)
+
+    monkeypatch.setattr("app.engine._synthesize", synthesize)
+    provider, voice = _synthesize_for_language(
+        "यह एक ऑनलाइन लर्निंग प्लेटफ़ॉर्म है।",
+        tmp_path / "hindi.wav",
+        settings,
+        "hi",
+        None,
+    )
+
+    assert (provider, voice) == ("kokoro", "hf_alpha")
+    assert observed == {
+        "text": "यह एक ऑनलाइन लर्निंग प्लेटफ़ॉर्म है।",
+        "provider": "kokoro",
+        "voice": "hf_alpha",
+    }
+
+
+def test_hindi_and_tamil_visual_queries_are_concrete_english():
+    examples = (
+        (
+            "ऑनलाइन शिक्षा ने छात्रों के लिए सीखना आसान बना दिया है।",
+            "student online learning laptop",
+        ),
+        (
+            "ஆன்லைன் கல்வி மாணவர்கள் எங்கிருந்தும் கற்க உதவுகிறது.",
+            "student online learning laptop",
+        ),
+    )
+    from app.providers import _search_query_variants
+
+    for narration, expected_query in examples:
+        hint = _offline_hint(narration)
+        queries = _search_query_variants({"text": narration, "visual_hint": hint})
+        assert queries[0] == expected_query
+        assert len(queries) == 2
+        assert all(query.isascii() for query in queries)
+        assert narration not in " ".join(queries)
+
+
+def test_hindi_and_tamil_caption_text_and_font_selection_are_preserved():
+    import os
+
+    examples = (
+        ("यह एक ऑनलाइन लर्निंग प्लेटफ़ॉर्म है।", "Nirmala UI"),
+        ("இது ஒரு ஆன்லைன் கற்றல் தளம்.", "Nirmala UI"),
+    )
+    for text, expected_font in examples:
+        scenes = [{"text": text, "start": 0.0, "end": 2.5}]
+        captions = _captions(scenes)
+        assert text in captions
+        expected_font = (
+            expected_font
+            if os.name == "nt"
+            else "Noto Sans Tamil"
+            if detect_language(text) == "ta"
+            else "Noto Sans Devanagari"
+        )
+        assert _caption_font_name(scenes) == expected_font
+
+
+@pytest.mark.parametrize(
+    ("language", "text", "provider", "voice"),
+    (
+        ("hi", "यह एक ऑनलाइन लर्निंग प्लेटफ़ॉर्म है।", "kokoro", "hf_alpha"),
+        ("ta", "இது ஒரு ஆன்லைன் கற்றல் தளம்.", "espeak", "ta"),
+    ),
+)
+def test_multilingual_script_job_preserves_captions_and_manifest(
+    monkeypatch,
+    tmp_path,
+    language,
+    text,
+    provider,
+    voice,
+):
+    import wave
+
+    settings = make_settings(tmp_path)
+    if language == "ta":
+        monkeypatch.setattr("app.engine._espeak_supports_voice", lambda _voice: True)
+        monkeypatch.setattr("app.engine._command_version", lambda *_args: "eSpeak NG test")
+    observed = {}
+
+    def synthesize(speech, output, configured, selected_voice):
+        observed.update(
+            speech=speech,
+            provider=configured.tts_provider,
+            voice=selected_voice,
+        )
+        with wave.open(str(output), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(22050)
+            audio.writeframes(b"\x00\x00" * 22050 * 3)
+
+    monkeypatch.setattr("app.engine._synthesize", synthesize)
+    app = create_app(
+        settings,
+        JobDatabase(settings.database_path),
+        LocalStorage(settings.data_dir / "objects"),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/broll/jobs",
+            json={
+                "script": text,
+                "language": language,
+                "captions": {"burn_in": True, "srt": True},
+            },
+            headers={"Idempotency-Key": f"language-{language}"},
+        )
+        completed = wait_for_status(client, response.json()["job_id"], "succeeded")
+        manifest = client.get(completed["result"]["files"]["manifest.json"]).json()
+        timeline = client.get(completed["result"]["files"]["timeline.json"]).json()
+        captions = client.get(completed["result"]["files"]["captions.srt"]).text
+        video = client.get(completed["result"]["files"]["video_16_9.mp4"])
+
+    assert video.status_code == 200
+    assert video.content[4:8] == b"ftyp"
+    assert observed == {"speech": text, "provider": provider, "voice": voice}
+    assert manifest["input_language"] == manifest["caption_language"] == language
+    assert manifest["models"]["tts"]["provider"] == provider
+    assert manifest["models"]["tts"]["voice"] == voice
+    assert timeline["scenes"][0]["narration"] == text
+    assert timeline["scenes"][0]["end"] == pytest.approx(timeline["duration_seconds"])
+    assert text in captions
+
+
+def test_tamil_job_reports_structured_unavailable_error(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr("app.engine._espeak_supports_voice", lambda _voice: False)
+    app = create_app(
+        settings,
+        JobDatabase(settings.database_path),
+        LocalStorage(settings.data_dir / "objects"),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/broll/jobs",
+            json={"script": "இது ஒரு ஆன்லைன் கற்றல் தளம்.", "language": "ta"},
+            headers={"Idempotency-Key": "tamil-tts-unavailable"},
+        )
+        completed = wait_for_status(client, response.json()["job_id"], "failed")
+
+    assert completed["error"]["code"] == "TTS_LANGUAGE_UNAVAILABLE"
+    assert "Tamil narration is not configured" in completed["error"]["message"]
 
 
 def test_scene_hints_use_offline_rules_without_groq_credentials(tmp_path):
@@ -193,12 +446,71 @@ def test_team_planning_hint_avoids_fragmented_narration_query():
     assert len(queries) <= 2
 
 
-def test_ui_explains_procedural_fallback_when_stock_is_unavailable():
+def test_ui_has_broll_studio_branding_and_hides_internal_job_details():
     html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    script = (Path(__file__).parents[1] / "app" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "scene-specific illustration keeps the video complete" in html
-    assert "the render fails rather than silently substituting" not in html
-    assert "Real stock footage is required by default" not in html
+    assert "<title>Broll Studio" in html
+    assert "Broll<span class=\"brand-light\">Studio</span>" in html
+    assert "Footage credits" not in html + script
+    assert "payload.error" not in script
+    assert "timeline.json" not in script
+    assert "Your story is safe. Please try again in a moment." in script
+
+
+def test_espeak_windows_standard_install_is_discovered(monkeypatch, tmp_path):
+    executable = tmp_path / "eSpeak NG" / "espeak-ng.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.setattr("app.engine.shutil.which", lambda _name: None)
+    monkeypatch.setattr("app.engine.os.name", "nt")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+
+    assert _find_espeak_binary() == str(executable)
+
+
+def test_espeak_tamil_voice_list_uses_unicode_safe_decoding(monkeypatch):
+    observed = {}
+
+    def run(command, **kwargs):
+        observed.update(command=command, **kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=" 5  ta  --/M Tamil தமிழ் dra\\ta\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.engine._find_espeak_binary", lambda: "espeak-ng.exe")
+    monkeypatch.setattr("app.engine.subprocess.run", run)
+
+    assert _espeak_supports_voice("ta")
+    assert observed["encoding"] == "utf-8"
+    assert observed["errors"] == "replace"
+
+
+def test_espeak_tts_uses_unicode_safe_subprocess_decoding(monkeypatch, tmp_path):
+    settings = replace(make_settings(tmp_path), tts_provider="espeak")
+    observed = {}
+
+    def run(command, **kwargs):
+        text_path = Path(command[-1])
+        observed.update(command=command, source_text=text_path.read_text(encoding="utf-8"), **kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("app.engine._find_espeak_binary", lambda: "espeak-ng.exe")
+    monkeypatch.setattr("app.engine.subprocess.run", run)
+    output = tmp_path / "tamil.wav"
+    _synthesize("இது ஒரு தமிழ் குரல்.", output, settings, "ta")
+
+    assert observed["command"][0] == "espeak-ng.exe"
+    assert observed["command"][1:3] == ["-b", "1"]
+    assert observed["command"][3:5] == ["-v", "ta"]
+    assert observed["command"][-2] == "-f"
+    assert observed["source_text"] == "இது ஒரு தமிழ் குரல்."
+    assert observed["encoding"] == "utf-8"
+    assert observed["errors"] == "replace"
+    assert not output.with_name("tamil.espeak-input.txt").exists()
 
 
 def test_scene_hints_use_groq_for_missing_hints_and_preserve_explicit_hints(monkeypatch, tmp_path):
@@ -309,7 +621,7 @@ def test_stock_search_exhaustion_uses_scene_illustration_and_completes_job(monke
     assert timeline["scenes"][0]["visual_status"] == "procedural_illustration"
     assert timeline["scenes"][0]["clip"]["source"] == "procedural-illustration"
     assert timeline["scenes"][0]["clip"]["fallback"] is True
-    assert timeline["scenes"][0]["clip"]["visual_category"] == "nature"
+    assert timeline["scenes"][0]["clip"]["visual_category"] == "gardening"
     assert timeline["scenes"][0]["clip"]["relevance_score"] is None
     assert timeline["scenes"][0]["clip"]["fallback_reason"] == "no_verified_stock_within_search_budget"
     assert Path(settings.data_dir / "work" / response.json()["job_id"] / "video_16_9.mp4").is_file()
@@ -693,8 +1005,11 @@ def test_creator_ui_and_assets_are_served(tmp_path):
         page = client.get("/")
         assert page.status_code == 200
         assert "Start with your story" in page.text
+        assert '<option value="ta">Tamil</option>' in page.text
         assert "/static/app.js" in page.text
-        assert client.get("/static/app.js").status_code == 200
+        script = client.get("/static/app.js")
+        assert script.status_code == 200
+        assert 'body.append("language", language)' in script.text
         assert client.get("/static/styles.css").status_code == 200
 
 
@@ -721,6 +1036,76 @@ def test_fallback_visual_categories_vary_by_scene_meaning():
     }
     for text, expected in examples.items():
         assert _fallback_visual_category({"text": text, "visual_hint": ""}) == expected
+
+
+def test_fallback_categories_use_english_hindi_and_tamil_scene_hints():
+    examples = (
+        ("पौधे पानी की कमी से सूख रहे हैं।", "dry_plants_water_shortage"),
+        ("The plants are drying because there is not enough water.", "dry_plants_water_shortage"),
+        ("செடிகள் தண்ணீர் இல்லாததால் உலர்கின்றன.", "dry_plants_water_shortage"),
+        ("Teacher explains the lesson to students.", "classroom"),
+        ("He makes small holes in an old bottle.", "bottle_recycling"),
+        ("Aarav lives in a village.", "rural_village"),
+        ("Villagers adopt the idea and work together in the garden.", "community_gardening"),
+        ("छोटी सी कोशिश से बड़ा बदलाव आ सकता है।", "healthy_plants"),
+        ("Small efforts can create big changes.", "healthy_plants"),
+    )
+    for text, expected in examples:
+        scene = {"text": text, "visual_hint": _offline_hint(text)}
+        assert _fallback_visual_category(scene) == expected
+        assert scene["visual_hint"]
+
+
+def test_hindi_small_effort_story_maps_to_scene_specific_fallbacks():
+    story = (
+        ("आरव एक गाँव में रहता है।", "rural_village"),
+        ("उसकी शिक्षिका उसे कोशिश करने से नहीं डरने को कहती हैं।", "classroom"),
+        ("आरव देखता है कि पानी की कमी से पौधे सूख रहे हैं।", "dry_plants_water_shortage"),
+        ("वह पुरानी बोतलों में छोटे छेद करता है।", "bottle_recycling"),
+        ("फिर वह बोतल से पौधों को धीरे-धीरे पानी देता है।", "watering_plants"),
+        ("पौधे फिर से हरे और स्वस्थ हो जाते हैं।", "healthy_plants"),
+        ("गाँव के लोग भी इस तरीके को अपनाते हैं।", "community_gardening"),
+        ("छोटी सी कोशिश से बड़ा बदलाव आता है।", "healthy_plants"),
+    )
+    categories = []
+    for text, expected in story:
+        hint = _offline_hint(text)
+        category = _fallback_visual_category({"text": text, "visual_hint": hint})
+        assert category == expected, {"hint": hint, "text": text}
+        categories.append(category)
+
+    merged_intro = "आरव एक गाँव में रहता है। उसकी शिक्षिका उसे कोशिश करने से नहीं डरने को कहती हैं।"
+    assert _fallback_visual_category({"text": merged_intro, "visual_hint": _offline_hint(merged_intro)}) == "rural_classroom"
+    assert len(set(categories)) >= 6
+
+
+def test_fallback_images_are_distinct_across_scene_categories(tmp_path):
+    from PIL import Image, ImageChops, ImageStat
+
+    samples = (
+        ("A student studies online with a laptop.", "student using laptop at a desk", "learning"),
+        ("Plants dry because there is not enough water.", "dry plants water shortage drought", "dry_plants_water_shortage"),
+        ("A teacher explains a lesson to students.", "teacher guiding students in a classroom", "classroom"),
+        ("A village teacher helps a child learn.", "rural school teacher and student", "rural_classroom"),
+        ("Aarav lives in a village.", "rural village houses fields and trees", "rural_village"),
+        ("A person makes holes in a reused bottle.", "person making holes in reused bottle", "bottle_recycling"),
+    )
+    images = []
+    for index, (text, hint, _category_name) in enumerate(samples):
+        output = tmp_path / f"scene_{index}.png"
+        _create_artwork({"text": text, "visual_hint": hint}, index, "16:9", output, include_text=False)
+        assert output.is_file()
+        with Image.open(output) as image:
+            assert image.size == (1920, 1080)
+            assert image.mode in {"RGB", "RGBA"}
+            if image.mode == "RGBA":
+                assert ImageStat.Stat(image.getchannel("A")).extrema == (255, 255)
+            assert len(set(image.resize((32, 18)).convert("RGB").getdata())) > 20
+            images.append(image.resize((32, 18)).convert("RGB").copy())
+
+    for first_index in range(len(images)):
+        for second_index in range(first_index + 1, len(images)):
+            assert ImageChops.difference(images[first_index], images[second_index]).getbbox() is not None
 
 
 def test_script_job_is_idempotent_and_returns_artifacts(tmp_path):

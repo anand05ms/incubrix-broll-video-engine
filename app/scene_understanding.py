@@ -5,11 +5,18 @@ import urllib.request
 from typing import Any
 
 from app.config import Settings
+from app.languages import detect_language
 
 
 GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_GROQ_RESPONSE_BYTES = 256 * 1024
 RULE_HINTS = (
+    ({"effort", "change", "changes", "impact"}, "small seed growing into a healthy plant"),
+    ({"drought", "dry", "drying", "wilt", "wilted", "shortage", "thirsty"}, "dry plants water shortage drought"),
+    ({"community", "together", "neighbors", "neighbours", "villagers"}, "community members caring for a shared garden"),
+    ({"village", "villager", "rural", "countryside"}, "rural village houses, fields, and trees"),
+    ({"teacher", "teachers", "classroom", "teaching", "taught"}, "teacher guiding students in a classroom"),
+    ({"bottle", "bottles", "container", "containers", "recycle", "recycling", "holes"}, "person making holes in a reused bottle"),
     ({"artificial", "intelligence", "ai", "machine", "learning", "neural"}, "person using artificial intelligence on computer"),
     ({"plan", "plans", "planning", "schedule", "calendar", "tasks", "task", "team", "teams", "productivity", "organize", "organizing"}, "team planning meeting with task board"),
     ({"analyze", "analyzing", "analysis", "data", "dataset", "information"}, "data analysis on computer screen"),
@@ -29,10 +36,55 @@ RULE_HINTS = (
     ({"health", "wellbeing", "wellness", "care", "exercise", "sleep"}, "people practicing healthy daily routines"),
 )
 WORD_PATTERN = re.compile(r"\b[\w'-]+\b", re.UNICODE)
+LOCALIZED_VISUAL_HINTS = {
+    "hi": (
+        (("छोटी सी कोशिश", "बड़ा बदलाव", "छोटा प्रयास", "बदलाव"), "small seed growing into a healthy plant"),
+        (("सूख", "पानी की कमी", "जल की कमी", "सूखे", "पानी नहीं"), "dry plants water shortage drought"),
+        (("पानी देता", "पानी देती", "सींच", "सिंचाई", "बोतलों से"), "watering plants with a reused bottle"),
+        (("बोतल", "छेद"), "person making holes in a reused bottle for watering plants"),
+        (("शिक्षक", "शिक्षिका", "अध्यापक", "अध्यापिका", "पढ़ाते", "पढ़ाती"), "teacher guiding a student in a classroom"),
+        (("ग्रामीणों", "लोगों ने", "लोग भी", "अपनाया", "अपनाते", "मिलकर"), "villagers working together in a shared green garden"),
+        (("गाँव", "गांव", "ग्रामीण", "किसान"), "rural village houses fields and trees"),
+        (("स्वस्थ", "हरी", "हरे", "हरियाली"), "healthy green plants growing in a garden"),
+        (("पौधा", "पौधे", "पौधों", "पेड़"), "gardening and plants in a rural garden"),
+        (("शिक्षा", "छात्र", "छात्रों", "सीख", "ऑनलाइन"), "student online learning with laptop"),
+        (("व्यवसाय", "कंपनी", "ग्राहक"), "small business owner serving customers"),
+        (("कृत्रिम बुद्धिमत्ता", "एआई", "डेटा"), "person analyzing data on computer"),
+        (("योजना", "कार्य", "टीम"), "team planning meeting with task board"),
+        (("संदेश", "फोन", "स्मार्टफोन"), "person using smartphone messaging app"),
+    ),
+    "ta": (
+        (("சிறிய முயற்சி", "பெரிய மாற்றம்", "முயற்சி", "மாற்றம்"), "small seed growing into a healthy plant"),
+        (("வறண்டு", "வறட்சி", "உலர்ந்த", "உலர்கின்ற", "வாடுகின்ற", "தண்ணீர் பற்றாக்குறை", "நீர் பற்றாக்குறை", "தண்ணீர் இல்லை", "நீர் இல்லை", "தண்ணீர் இல்லாமல்", "நீர் இல்லாமல்"), "dry plants water shortage drought"),
+        (("தண்ணீர்", "நீர்", "நீர்ப்பாசனம்"), "watering plants with a reused bottle"),
+        (("பாட்டில்", "துளை"), "person making holes in a reused bottle for watering plants"),
+        (("மக்கள் ஒன்றாக", "ஏற்றுக்கொண்டனர்", "பின்பற்றினர்"), "villagers working together in a shared green garden"),
+        (("கிராமம்", "கிராமத்தில்", "விவசாயம்", "விவசாயி"), "rural village houses fields and trees"),
+        (("ஆசிரியர்", "ஆசிரியை", "பள்ளி"), "teacher guiding students in a classroom"),
+        (("ஆரோக்கியமான", "பசுமை", "செழித்து"), "healthy green plants growing in a garden"),
+        (("செடி", "செடிகள்", "தாவரம்", "மரம்"), "gardening and plants in a rural garden"),
+        (("கல்வி", "மாணவர்", "மாணவர்கள்", "கற்றல்", "கற்க", "ஆன்லைன்"), "student online learning with laptop"),
+        (("வணிகம்", "நிறுவனம்", "வாடிக்கையாளர்"), "small business owner serving customers"),
+        (("செயற்கை நுண்ணறிவு", "தரவு"), "person analyzing data on computer"),
+        (("திட்டம்", "பணி", "குழு"), "team planning meeting with task board"),
+        (("செய்தி", "தொலைபேசி", "கைபேசி"), "person using smartphone messaging app"),
+    ),
+}
 
 
 def _offline_hint(text: str) -> str:
+    language = detect_language(text)
+    if language in LOCALIZED_VISUAL_HINTS:
+        for phrases, hint in LOCALIZED_VISUAL_HINTS[language]:
+            if any(phrase in text for phrase in phrases):
+                return hint
     words = {word.lower() for word in WORD_PATTERN.findall(text)}
+    if (
+        "water" in words
+        and words & {"plant", "plants", "garden", "gardening"}
+        and words & {"bottle", "bottles", "slowly", "slow", "gently"}
+    ) or words & {"watering", "watered", "irrigation", "sprinkling"}:
+        return "watering plants with a reused bottle"
     for terms, hint in RULE_HINTS:
         if words & terms:
             return hint
@@ -43,7 +95,7 @@ def _offline_hint(text: str) -> str:
 def _with_offline_hints(scenes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = [dict(scene) for scene in scenes]
     for scene in result:
-        if not scene.get("visual_hint"):
+        if not scene.get("visual_hint") or detect_language(scene["visual_hint"]) != "en":
             scene["visual_hint"] = _offline_hint(scene["text"])
     return result
 
@@ -121,7 +173,7 @@ def enrich_scene_visual_hints(
     scenes: list[dict[str, Any]],
     settings: Settings,
 ) -> tuple[list[dict[str, Any]], str | None, str]:
-    if all(scene.get("visual_hint") for scene in scenes):
+    if all(scene.get("visual_hint") and detect_language(scene["visual_hint"]) == "en" for scene in scenes):
         return scenes, None, "provided"
     if not settings.groq_api_key:
         return (
@@ -141,5 +193,7 @@ def enrich_scene_visual_hints(
 
     enriched = [dict(scene) for scene in scenes]
     for index, hint in hints.items():
-        enriched[index]["visual_hint"] = hint
+        enriched[index]["visual_hint"] = (
+            hint if detect_language(hint) == "en" else _offline_hint(enriched[index]["text"])
+        )
     return enriched, "Narration text was sent to Groq for scene visual planning.", "groq"

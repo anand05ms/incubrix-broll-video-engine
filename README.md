@@ -10,7 +10,7 @@ When Groq is unavailable, deterministic scene rules produce short, concrete visu
 
 Normal stock selections must clear the local OpenCLIP `0.20` threshold. If none do, a candidate scoring at least `0.17` may be used as a contextual fallback, marked with `fallback: true`, `fallback_reason: "no_high_confidence_match"`, and its `relevance_score` in `timeline.json`. If all verified candidates score below `0.17`, the highest-scoring verified candidate is selected as a last-resort contextual fallback and marked with `fallback_reason: "low_confidence_contextual_match"`; `manifest.json` includes the `LOW_CONFIDENCE_BROLL_FALLBACK` warning. Both fallback tiers retain license/media checks and any configured close-call review, but are not calibrated evidence of human-rated relevance and must be inspected before use. A missing scene keeps its own scene-specific text-free illustration rather than inheriting another scene's stock selection; narration continues. Before a result is marked complete, the renderer verifies each illustration is decodable and nonblank and checks that the final MP4 contains audio/video streams, expected duration, and sampled nonblack frames. OpenCLIP similarity is not the human-rated 85% evaluation. Watermarks, AI-generation status, safety, and logo absence are not universally verified; review footage before publication. When Groq vision is configured, close-scoring frames may receive a separate relevance/logo/safety review. Those model verdicts are un-calibrated and are not a substitute for human review or a calibrated logo detector.
 
-Scripts use Kokoro-82M by default, with `af_heart` English and `hf_alpha` Hindi voice identifiers; install the `kokoro` extra. eSpeak and pyttsx3 remain configurable alternatives. Audio-only jobs use faster-whisper (`small`, `int8` by default); model weights download on first use. Groq (`openai/gpt-oss-120b`) can generate missing visual hints; an optional configured Groq vision model judges close calls. These calls send the relevant scene text, and vision review also sends a sampled frame to Groq. Offline scene rules and OpenCLIP-only screening are used when Groq is not configured. Model use and unknown costs are disclosed in the manifest.
+Scripts use Kokoro-82M by default: English uses `af_heart`, and Hindi uses the configurable `HINDI_TTS_VOICE` (`hf_alpha` by default). Tamil is not supported by Kokoro 0.9.4; the separate `TAMIL_TTS_PROVIDER=espeak` path uses eSpeak NG's Tamil voice (`TAMIL_TTS_VOICE=ta`). Install eSpeak NG with its Tamil voice to enable Tamil narration; otherwise Tamil script jobs fail explicitly with `TTS_LANGUAGE_UNAVAILABLE`, never English speech. Input language can be selected in the UI/API or detected from Hindi/Tamil/Latin script. Captions preserve the original text, and non-English visual hints are converted to concise English concepts for stock search. Windows uses Nirmala UI for Hindi/Tamil burned-in captions; the Docker image includes Noto Indic fonts. Audio-only jobs use faster-whisper (`small`, `int8` by default); model weights download on first use. Groq (`openai/gpt-oss-120b`) can generate missing visual hints; an optional configured Groq vision model judges close calls. These calls send the relevant scene text, and vision review also sends a sampled frame to Groq. Offline scene rules and OpenCLIP-only screening are used when Groq is not configured. Model use and unknown costs are disclosed in the manifest.
 
 SQLAlchemy stores durable job records in SQLite. Compose runs a separate queue worker that atomically claims jobs from the shared SQLite database; this is a single-host/single-worker deployment pattern, not a distributed broker or horizontally scalable database. MinIO stores artifacts in Compose. Optional terminal callbacks use HMAC-SHA256 signatures and require `CALLBACK_HMAC_SECRET`. The Docker image includes FFmpeg, eSpeak NG, and Noto fonts for multilingual captions. The app still has no authentication or rate limiting and must not be exposed publicly without a protective access layer.
 
@@ -52,11 +52,25 @@ When renderer code changes, stop and restart the local Uvicorn process before su
 
 The API and separate worker share a Compose volume containing the SQLite job queue, model cache, and work files; MinIO stores deliverable artifacts. Keep exactly one worker with SQLite. Rebuild and restart both services after changing renderer code (`docker compose up --build -d api worker`). The sample MinIO credentials are for local development only; replace them before exposing the service. Docker Compose could not be run in this development environment.
 
+### Deploy privately to Modal
+
+`modal_app.py` deploys the existing Docker image as a Modal ASGI app, stores the SQLite database, model cache, and generated files in a persistent Modal Volume, and protects the browser UI and API with HTTP Basic Authentication over HTTPS. The service scales to zero when idle and is limited to one container because the current SQLite job store is a single-host design.
+
+```powershell
+python -m pip install -e ".[deploy]"
+modal token new
+modal secret create broll-studio-browser-auth BROLL_STUDIO_USERNAME=YOUR_USERNAME BROLL_STUDIO_PASSWORD=YOUR_LONG_RANDOM_PASSWORD
+modal deploy modal_app.py
+modal app list
+```
+
+The secret must exist before deployment. The browser will prompt for that username and password when you open the URL printed by `modal deploy`; use the same credentials for API requests. Use `curl -u YOUR_USERNAME:YOUR_LONG_RANDOM_PASSWORD <URL>/ready` to check readiness. Modal bills for deployed compute, storage, and image builds according to the current account plan; the service has no minimum warm containers. Optional provider API keys from `.env` are deliberately not copied into the cloud deployment. Configure them through Modal Secrets only if you choose to enable those providers.
+
 ## Hosting and GitHub
 
-GitHub stores the source code and runs automated tests; it does not run this video API for reviewers. FFmpeg rendering, Kokoro, transcription, OpenCLIP, and persistent result files need a host with a writable volume and enough CPU/RAM. This repository currently has a Docker Compose deployment, not a verified Modal/Render/Vercel production deployment. Vercel is not a fit for long-running FFmpeg workers. A free-tier host may sleep, limit processing/storage, or remove files; no free host can guarantee unlimited rendering.
+GitHub stores the source code and runs automated tests; Modal hosts the private video API. FFmpeg rendering, Kokoro, transcription, OpenCLIP, and persistent result files need a host with a writable volume and enough CPU/RAM. Modal runs this single-host SQLite setup in one container with a persistent volume. Vercel is not a fit for long-running FFmpeg workers. A free-tier host may sleep, limit processing/storage, or remove files; no free host can guarantee unlimited rendering.
 
-This repository includes a GitHub Actions test workflow. Before publishing, create a private GitHub repository and push this project without `.env`, `runtime-data`, or credentials. A deployment requires a persistent volume and an access layer; no public deployment was made or verified. Never expose the unauthenticated demo directly to the public internet.
+This repository includes a GitHub Actions test workflow. Never deploy `.env`, `runtime-data`, or provider credentials. The Modal endpoint uses HTTP Basic Authentication for the UI and API; the app has no rate limiting. Keep the password private and rotate it through the Modal Secret if needed.
 
 After creating an empty private repository on GitHub, connect and publish this local repository:
 
@@ -103,7 +117,9 @@ All runtime settings are in `.env.example`. Important settings include:
 
 | Setting | Purpose |
 |---|---|
-| `TTS_PROVIDER`, `TTS_VOICE` | `kokoro` and `af_heart` by default; also `espeak`, `pyttsx3`, and test-only `mock` |
+| `TTS_PROVIDER`, `TTS_VOICE` | Existing default English TTS (`kokoro`, `af_heart`); also `espeak`, `pyttsx3`, and test-only `mock` |
+| `HINDI_TTS_VOICE` | Hindi Kokoro voice; defaults to `hf_alpha` (also `hf_beta`, `hm_omega`, `hm_psi`) |
+| `TAMIL_TTS_PROVIDER`, `TAMIL_TTS_VOICE` | Separate Tamil TTS path; defaults to `espeak` / `ta` and requires eSpeak NG with its Tamil voice; Kokoro does not support Tamil |
 | `VISUAL_PROVIDER` | `auto` (default), `pixabay`, `openverse`, `wikimedia`, `internet_archive`, `pexels`, or `procedural`; a named provider is preferred, with configured providers tried afterward |
 | `VISUAL_PROVIDER_ORDER` | Fallback order used by `auto` and after the preferred named provider; Internet Archive is appended if omitted |
 | `INTERNET_ARCHIVE_ENABLED` | `true` by default; enables the no-key Internet Archive fallback |

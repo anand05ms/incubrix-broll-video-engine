@@ -23,6 +23,7 @@ asr = ["faster-whisper>=1.1,<2"]
 vision = ["open_clip_torch>=2.26,<3"]
 kokoro = ["kokoro>=0.9.4,<1", "soundfile>=0.12,<1"]
 test = ["httpx>=0.27,<1", "pytest>=8,<9"]
+deploy = ["modal>=1.6,<2"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

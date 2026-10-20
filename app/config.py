@@ -13,6 +13,9 @@ class Settings:
     ffprobe_path: str
     tts_provider: str
     tts_voice: str
+    hindi_tts_voice: str
+    tamil_tts_provider: str
+    tamil_tts_voice: str
     visual_provider: str
     visual_provider_order: tuple[str, ...]
     internet_archive_enabled: bool
@@ -56,6 +59,9 @@ class Settings:
             ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
             tts_provider=tts_provider,
             tts_voice=os.getenv("TTS_VOICE", "af_heart" if tts_provider == "kokoro" else "en"),
+            hindi_tts_voice=os.getenv("HINDI_TTS_VOICE", "hf_alpha"),
+            tamil_tts_provider=os.getenv("TAMIL_TTS_PROVIDER", "espeak").strip().lower(),
+            tamil_tts_voice=os.getenv("TAMIL_TTS_VOICE", "ta"),
             visual_provider=os.getenv("VISUAL_PROVIDER", "auto").strip().lower(),
             visual_provider_order=tuple(
                 provider.strip().lower()

@@ -57,6 +57,10 @@ paths:
                 scenes:
                   type: string
                   description: JSON array of scene objects
+                language:
+                  type: string
+                  enum: [en, hi, ta]
+                  description: Optional narration/caption language; auto-detected when omitted
                 aspect_ratios:
                   type: string
                   description: JSON array or comma-separated list
@@ -172,6 +176,10 @@ components:
           type: [array, "null"]
           items:
             $ref: "#/components/schemas/Scene"
+        language:
+          type: [string, "null"]
+          enum: [en, hi, ta]
+          description: Optional narration/caption language; auto-detected when omitted
         voice:
           type: [string, "null"]
         aspect_ratios:

@@ -5,7 +5,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
@@ -41,6 +41,7 @@ class JobInput(BaseModel):
     audio_url: str | None = None
     script: str | None = Field(default=None, max_length=30000)
     scenes: list[SceneInput] | None = Field(default=None, max_length=100)
+    language: Literal["en", "hi", "ta"] | None = None
     voice: str | None = Field(default=None, max_length=100)
     aspect_ratios: list[str] = Field(default_factory=lambda: ["16:9"], min_length=1, max_length=3)
     style: str | None = Field(default=None, max_length=500)
@@ -136,6 +137,7 @@ async def _read_request(request: Request, max_upload_bytes: int) -> tuple[JobInp
                 "audio_url": form.get("audio_url") or None,
                 "script": form.get("script") or None,
                 "scenes": json.loads(scenes) if scenes else None,
+                "language": form.get("language") or None,
                 "voice": form.get("voice") or None,
                 "aspect_ratios": json.loads(ratios) if ratios.startswith("[") else [part.strip() for part in ratios.split(",")],
                 "style": form.get("style") or None,

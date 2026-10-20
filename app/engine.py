@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.config import Settings
 from app.db import JobDatabase
+from app.languages import detect_language
 from app.providers import (
     MAX_PROVIDERS_PER_SCENE,
     MAX_QUERIES_PER_SCENE,
@@ -83,7 +85,7 @@ PALETTES = [
     ((19, 42, 67), (53, 98, 154), (119, 190, 222)),
 ]
 WORD_RE = re.compile(r"\b[\w'-]+\b", re.UNICODE)
-SENTENCE_RE = re.compile(r".+?(?:[.!?](?:[\"')\]]*)?(?=\s|$)|$)", re.DOTALL)
+SENTENCE_RE = re.compile(r".+?(?:[.!?।॥](?:[\"')\]]*)?(?=\s|$)|$)", re.DOTALL)
 
 
 class EngineError(Exception):
@@ -101,9 +103,22 @@ class EngineError(Exception):
         self.details = details
 
 
-def _run(command: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str],
+    *,
+    timeout: int = 120,
+    encoding: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+        options: dict[str, Any] = {
+            "check": True,
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout,
+        }
+        if encoding:
+            options.update(encoding=encoding, errors="replace")
+        result = subprocess.run(command, **options)
         return result
     except FileNotFoundError as exc:
         raise EngineError("MEDIA_TOOL_UNAVAILABLE", f"Required executable not found: {command[0]}") from exc
@@ -127,11 +142,112 @@ def _command_version(binary: str | None, arguments: list[str]) -> str | None:
     return output.splitlines()[0].strip() if output else None
 
 
+def _find_espeak_binary() -> str | None:
+    binary = shutil.which("espeak-ng") or shutil.which("espeak")
+    if binary:
+        return binary
+    if os.name == "nt":
+        program_files = (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            r"C:\Program Files",
+        )
+        for directory in dict.fromkeys(path for path in program_files if path):
+            candidate = Path(directory) / "eSpeak NG" / "espeak-ng.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def _package_version(package: str) -> str | None:
     try:
         return importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def _espeak_supports_voice(voice: str) -> bool:
+    binary = _find_espeak_binary()
+    if not binary:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "--voices"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return any(
+        len(fields := line.split()) > 1 and fields[1].split("-")[0].lower() == voice.lower()
+        for line in (result.stdout or "").splitlines()
+    )
+
+
+def _synthesize_for_language(
+    text: str,
+    output: Path,
+    settings: Settings,
+    language: str,
+    requested_voice: str | None,
+) -> tuple[str, str]:
+    if language == "en":
+        voice = requested_voice or settings.tts_voice
+        _synthesize(text, output, settings, voice)
+        return settings.tts_provider, voice
+    if language == "hi":
+        voice = (requested_voice or settings.hindi_tts_voice).strip()
+        if voice not in {"hf_alpha", "hf_beta", "hm_omega", "hm_psi"}:
+            raise EngineError(
+                "TTS_VOICE_UNSUPPORTED",
+                "Hindi Kokoro voice must be one of hf_alpha, hf_beta, hm_omega, or hm_psi.",
+            )
+        try:
+            _synthesize(text, output, replace(settings, tts_provider="kokoro"), voice)
+        except EngineError as exc:
+            if exc.code == "TTS_UNAVAILABLE":
+                raise EngineError(
+                    "TTS_LANGUAGE_UNAVAILABLE",
+                    "Hindi narration requires the optional Kokoro TTS dependency.",
+                ) from exc
+            raise
+        return "kokoro", voice
+    if language == "ta":
+        provider = settings.tamil_tts_provider
+        voice = (requested_voice or settings.tamil_tts_voice).strip()
+        if provider != "espeak" or voice.split("-")[0].lower() != "ta" or not _espeak_supports_voice("ta"):
+            raise EngineError(
+                "TTS_LANGUAGE_UNAVAILABLE",
+                "Tamil narration is not configured with a Tamil-capable provider. "
+                "Install espeak-ng with its Tamil voice and set TAMIL_TTS_PROVIDER=espeak.",
+            )
+        provider_settings = replace(settings, tts_provider=provider)
+        try:
+            _synthesize(text, output, provider_settings, voice)
+        except EngineError as exc:
+            if exc.code == "TTS_UNAVAILABLE":
+                raise EngineError(
+                    "TTS_LANGUAGE_UNAVAILABLE",
+                    "Tamil narration requires espeak-ng with the Tamil voice installed.",
+                ) from exc
+            raise
+        return provider, voice
+    raise EngineError("TTS_LANGUAGE_UNAVAILABLE", f"Text-to-speech is not configured for language '{language}'.")
+
+
+def _caption_font_name(scenes: list[dict[str, Any]]) -> str | None:
+    text = " ".join(str(scene.get("text", "")) for scene in scenes)
+    language = detect_language(text)
+    if language == "en":
+        return None
+    if os.name == "nt":
+        return "Nirmala UI"
+    return "Noto Sans Tamil" if language == "ta" else "Noto Sans Devanagari"
 
 
 def _safe_remote_url(url: str) -> None:
@@ -243,11 +359,30 @@ def _synthesize(text: str, output: Path, settings: Settings, voice: str) -> None
             raise EngineError("TTS_FAILED", f"Kokoro narration failed: {exc}") from exc
         return
     if settings.tts_provider == "espeak":
-        binary = shutil.which("espeak-ng") or shutil.which("espeak")
+        binary = _find_espeak_binary()
         if not binary:
             raise EngineError("TTS_UNAVAILABLE", "Install espeak-ng or configure another TTS provider")
         language = re.sub(r"[^A-Za-z_-]", "", voice.split("-")[0]) or settings.tts_voice
-        _run([binary, "-v", language, "-w", str(output), text], timeout=120)
+        text_path = output.with_name(f"{output.stem}.espeak-input.txt")
+        text_path.write_text(text, encoding="utf-8")
+        try:
+            _run(
+                [
+                    binary,
+                    "-b",
+                    "1",
+                    "-v",
+                    language,
+                    "-w",
+                    str(output),
+                    "-f",
+                    str(text_path),
+                ],
+                timeout=120,
+                encoding="utf-8",
+            )
+        finally:
+            text_path.unlink(missing_ok=True)
         return
     if settings.tts_provider == "pyttsx3":
         try:
@@ -426,10 +561,73 @@ def _category(text: str, hint: str) -> str:
 
 
 def _fallback_visual_category(scene: dict[str, Any]) -> str:
-    terms = {
-        word.lower()
-        for word in WORD_RE.findall(f"{scene.get('text', '')} {scene.get('visual_hint', '')}")
-    }
+    text = str(scene.get("text", ""))
+    hint = str(scene.get("visual_hint", "")).lower()
+    terms = {word.lower() for word in WORD_RE.findall(f"{text} {hint}")}
+    if terms & {"drought", "dry", "drying", "wilt", "wilted", "thirsty", "shortage"} or any(
+        phrase in text for phrase in (
+            "सूख", "पानी की कमी", "जल की कमी", "வறண்டு", "உலர்ந்த",
+            "தண்ணீர் பற்றாக்குறை", "நீர் பற்றாக்குறை", "தண்ணீர் இல்லை", "நீர் இல்லை",
+        )
+    ):
+        return "dry_plants_water_shortage"
+    if terms & {"holes", "hole", "recycle", "recycling"} or any(
+        phrase in text for phrase in ("छेद", "துளை")
+    ):
+        return "bottle_recycling"
+    if terms & {"watering", "watered", "irrigation", "sprinkling"} or any(
+        phrase in text for phrase in ("सींच", "सिंचाई", "पानी दे", "தண்ணீர் ஊற்று", "நீர்ப்பாசனம்")
+    ):
+        return "watering_plants"
+    if terms & {"bottle", "bottles", "container", "containers"} or any(
+        phrase in text for phrase in ("बोतल", "பாட்டில்")
+    ):
+        return "bottle_recycling"
+    has_classroom = bool(terms & {"teacher", "teachers", "classroom", "teaching", "taught"}) or any(
+        phrase in text for phrase in ("शिक्षक", "शिक्षिका", "अध्यापक", "अध्यापिका", "पढ़ाती", "पढ़ाते",
+                                      "ஆசிரியர்", "ஆசிரியை", "பள்ளி")
+    )
+    has_village = bool(terms & {"village", "villages", "villager", "rural", "countryside", "farm", "farmer", "farmers"}) or any(
+        phrase in text for phrase in ("गाँव", "गांव", "ग्रामीण", "किसान",
+                                      "கிராமம்", "கிராமத்தில்", "விவசாயம்", "விவசாயி")
+    )
+    if has_classroom and has_village:
+        return "rural_classroom"
+    if has_classroom:
+        return "classroom"
+    if terms & {"community", "together", "neighbors", "neighbours", "villagers"} or any(
+        phrase in text for phrase in ("ग्रामीणों", "लोगों ने", "गाँववाले", "गांववाले",
+                                      "கிராம மக்கள்", "மக்கள் ஒன்றாக")
+    ):
+        return "community_gardening"
+    if terms & {"village", "villages", "villager", "rural", "countryside", "farm", "farmer", "farmers"} or any(
+        phrase in text for phrase in ("गाँव", "गांव", "ग्रामीण", "किसान",
+                                      "கிராமம்", "கிராமத்தில்", "விவசாயம்", "விவசாயி")
+    ):
+        return "rural_village"
+    if terms & {"seed", "seeds", "sapling", "saplings", "greenery", "healthy", "flourish", "flourishing"} or any(
+        phrase in text for phrase in ("हरी", "हरे", "हरियाली", "स्वस्थ पौधे", "பசுமை", "செழித்து", "ஆரோக்கியமான செடிகள்")
+    ):
+        return "healthy_plants"
+    if terms & {"plant", "plants", "flower", "flowers", "tree", "trees", "garden", "gardening"} or any(
+        phrase in text for phrase in ("पौधा", "पौधे", "पौधों", "पेड़", "बगीचा", "செடி", "செடிகள்", "தாவரம்", "மரம்")
+    ):
+        return "gardening"
+    if terms & {"meeting", "teamwork", "collaboration", "collaborate", "cooperate", "together"}:
+        return "meeting_teamwork"
+    if terms & {"car", "bus", "train", "truck", "bicycle", "bike", "vehicle", "transportation", "commute"}:
+        return "transportation"
+    if terms & {"kitchen", "cooking", "cook", "cooks", "recipe", "baking"}:
+        return "cooking"
+    if terms & {"exercise", "fitness", "running", "jogging", "workout", "walking"}:
+        return "wellbeing"
+    if terms & {"office", "workplace", "coworkers", "workstation"}:
+        return "office"
+    if (
+        terms & {"student", "students", "child", "children", "person", "people"}
+        and _category(text, hint) == "abstract"
+    ):
+        return "generic_people"
     if terms & {"communication", "communicate", "chat", "message", "messages", "messaging", "phone", "smartphone", "call", "calling"}:
         return "communication"
     if terms & {"improvement", "improvements", "organize", "organizing", "organization"}:
@@ -541,6 +739,7 @@ def _draw_fallback_scene(
     accent: tuple[int, int, int],
 ) -> None:
     scale = min(width, height)
+    variant = (accent[0] + accent[1] + accent[2]) % 3
     ink = (37, 58, 77)
     soft_ink = (86, 111, 128)
     pale = (239, 246, 246)
@@ -583,6 +782,266 @@ def _draw_fallback_scene(
         (int(width * 0.18), int(height * 0.27), int(width * 0.25), int(height * 0.4)),
         fill=(246, 250, 242),
     )
+
+    def point(x: float, y: float) -> tuple[int, int]:
+        return int(width * x), int(height * y)
+
+    def draw_person(center_x: float, ground_y: float, size: float, color: tuple[int, int, int]) -> None:
+        cx, gy = point(center_x, ground_y)
+        head = max(10, int(min(width, height) * size * 0.14))
+        body_top = gy - int(height * size * 0.62)
+        draw.ellipse((cx - head, body_top - head * 2, cx + head, body_top), fill=(194, 139, 104), outline=ink, width=max(2, scale // 260))
+        draw.rounded_rectangle(
+            (cx - int(width * size * 0.11), body_top, cx + int(width * size * 0.11), gy - int(height * size * 0.25)),
+            radius=max(6, scale // 100),
+            fill=color,
+            outline=ink,
+            width=max(2, scale // 260),
+        )
+        draw.line(
+            (cx - int(width * size * 0.05), gy - int(height * size * 0.25), cx - int(width * size * 0.1), gy),
+            fill=ink,
+            width=max(4, scale // 100),
+        )
+        draw.line(
+            (cx + int(width * size * 0.05), gy - int(height * size * 0.25), cx + int(width * size * 0.1), gy),
+            fill=ink,
+            width=max(4, scale // 100),
+        )
+        draw.line(
+            (cx - int(width * size * 0.1), body_top + int(height * size * 0.17), cx + int(width * size * 0.12), body_top + int(height * size * 0.28)),
+            fill=(194, 139, 104),
+            width=max(4, scale // 100),
+        )
+
+    def draw_plant(center_x: float, ground_y: float, size: float, healthy: bool) -> None:
+        cx, gy = point(center_x, ground_y)
+        stem_top = gy - int(height * size * (0.48 if healthy else 0.38))
+        stem_color = (58, 133, 87) if healthy else (134, 119, 77)
+        draw.line((cx, gy, cx, stem_top), fill=stem_color, width=max(5, scale // 95))
+        leaf_color = (70, 157, 98) if healthy else (157, 137, 88)
+        for direction, fraction in ((-1, 0.75), (1, 0.58)):
+            leaf_y = gy - int(height * size * fraction)
+            leaf_width = int(width * size * 0.2)
+            leaf_height = int(height * size * 0.13)
+            leaf_box = (
+                cx - leaf_width if direction < 0 else cx,
+                leaf_y - leaf_height // 2,
+                cx if direction < 0 else cx + leaf_width,
+                leaf_y + leaf_height // 2,
+            )
+            draw.ellipse(leaf_box, fill=leaf_color, outline=ink, width=max(2, scale // 300))
+            draw.line((cx, leaf_y, cx + direction * leaf_width, leaf_y), fill=ink, width=max(2, scale // 300))
+        if healthy:
+            draw.ellipse((cx - scale // 28, stem_top - scale // 22, cx + scale // 28, stem_top + scale // 24), fill=(232, 193, 104), outline=ink, width=max(2, scale // 280))
+        else:
+            draw.line((cx, stem_top, cx - scale // 16, stem_top + scale // 24), fill=stem_color, width=max(4, scale // 120))
+
+    def draw_tree(center_x: float, ground_y: float, size: float, healthy: bool = True) -> None:
+        cx, gy = point(center_x, ground_y)
+        trunk_width = max(10, int(width * size * 0.12))
+        trunk_top = gy - int(height * size * 0.55)
+        draw.rectangle((cx - trunk_width // 2, trunk_top, cx + trunk_width // 2, gy), fill=(127, 91, 66))
+        foliage = (73, 151, 99) if healthy else (154, 139, 99)
+        crown = int(width * size * 0.22)
+        for dx, dy in ((-1, 0), (0, -0.14), (1, 0)):
+            leaf_x = cx + dx * crown // 2
+            leaf_y = trunk_top + int(height * size * (0.09 + dy))
+            radius = int(width * size * 0.15)
+            draw.ellipse((leaf_x - radius, leaf_y - radius, leaf_x + radius, leaf_y + radius), fill=foliage)
+
+    def draw_bottle(center_x: float, base_y: float, size: float, filled: bool, with_holes: bool = False) -> None:
+        cx, by = point(center_x, base_y)
+        bottle_height = int(height * size)
+        bottle_width = int(width * size * 0.42)
+        neck_width = int(bottle_width * 0.44)
+        top = by - bottle_height
+        neck_top = top
+        shoulder_y = top + int(bottle_height * 0.16)
+        draw.rectangle((cx - neck_width // 2, neck_top, cx + neck_width // 2, shoulder_y), fill=(164, 211, 222), outline=ink, width=max(3, scale // 180))
+        draw.rounded_rectangle((cx - bottle_width // 2, shoulder_y, cx + bottle_width // 2, by), radius=max(8, scale // 90), fill=(170, 218, 229) if filled else (213, 228, 226), outline=ink, width=max(4, scale // 150))
+        draw.line((cx, shoulder_y + scale // 35, cx, by - scale // 24), fill=(245, 250, 242), width=max(3, scale // 180))
+        if filled:
+            water_top = by - int(bottle_height * 0.42)
+            draw.rectangle((cx - bottle_width // 2 + 5, water_top, cx + bottle_width // 2 - 5, by - 5), fill=(82, 177, 216))
+        if with_holes:
+            for fraction in (0.48, 0.62, 0.76):
+                hole_y = shoulder_y + int((by - shoulder_y) * fraction)
+                draw.ellipse((cx - bottle_width // 2 - scale // 100, hole_y, cx - bottle_width // 2 + scale // 90, hole_y + scale // 90), fill=(42, 118, 158))
+
+    if category in {
+        "rural_village", "rural_classroom", "classroom", "dry_plants_water_shortage", "water_shortage",
+        "bottle_recycling", "watering_plants", "healthy_plants", "gardening",
+        "community_gardening", "generic_people", "abstract", "meeting_teamwork",
+        "transportation", "cooking", "wellbeing", "office",
+    }:
+        draw.rectangle((0, 0, width, height), fill=(177, 218, 232))
+        draw.ellipse((int(width * 0.76), int(height * 0.07), int(width * 0.9), int(height * 0.29)), fill=(255, 220, 132))
+        draw.polygon((point(0, 0.66), point(0.2, 0.4), point(0.43, 0.67)), fill=(147, 190, 152))
+        draw.polygon((point(0.3, 0.67), point(0.61, 0.37), point(0.96, 0.67)), fill=(122, 177, 142))
+
+        if category == "classroom":
+            draw.rectangle((0, int(height * 0.67), width, height), fill=(199, 175, 137))
+            draw.rectangle((int(width * 0.16), int(height * 0.13), int(width * 0.84), int(height * 0.53)), fill=(47, 105, 83), outline=ink, width=max(5, scale // 120))
+            draw.line((int(width * 0.22), int(height * 0.25), int(width * 0.62), int(height * 0.25)), fill=(233, 238, 208), width=max(4, scale // 130))
+            draw.line((int(width * 0.22), int(height * 0.34), int(width * 0.72), int(height * 0.34)), fill=(233, 238, 208), width=max(4, scale // 130))
+            draw.ellipse((int(width * 0.69), int(height * 0.19), int(width * 0.78), int(height * 0.32)), fill=(250, 210, 112))
+            draw_person(0.28, 0.83, 0.34, (205, 126, 88))
+            draw_person(0.5, 0.87, 0.29, (104, 147, 189))
+            draw_person(0.72, 0.87, 0.29, (174, 126, 184))
+            for x in (0.38, 0.59, 0.81):
+                draw.rectangle((int(width * (x - 0.08)), int(height * 0.82), int(width * (x + 0.08)), int(height * 0.87)), fill=(148, 102, 74))
+            return
+
+        if category == "rural_classroom":
+            draw.rectangle((0, int(height * 0.65), width, height), fill=(146, 181, 112))
+            draw_tree(0.13, 0.79, 0.52)
+            school = (int(width * 0.31), int(height * 0.28), int(width * 0.69), int(height * 0.68))
+            draw.rectangle(school, fill=(238, 216, 174), outline=ink, width=max(5, scale // 130))
+            draw.polygon((point(0.27, 0.29), point(0.5, 0.13), point(0.73, 0.29)), fill=(184, 107, 82), outline=ink)
+            draw.rectangle((int(width * 0.39), int(height * 0.42), int(width * 0.61), int(height * 0.57)), fill=(54, 109, 84), outline=ink, width=max(3, scale // 180))
+            draw_person(0.51, 0.91, 0.42, (193, 126, 89))
+            draw_person(0.76, 0.91, 0.35, (93, 140, 180))
+            return
+
+        if category in {"dry_plants_water_shortage", "water_shortage"}:
+            draw.rectangle((0, int(height * 0.64), width, height), fill=(194, 151, 103))
+            for crack_x in ((0.1, 0.36, 0.59, 0.82), (0.16, 0.41, 0.67, 0.88), (0.12, 0.3, 0.62, 0.8))[variant]:
+                x, y = point(crack_x, 0.79)
+                draw.line((x, y, x + scale // 20, y + scale // 35, x - scale // 30, y + scale // 18), fill=(132, 99, 75), width=max(3, scale // 220))
+            plant_layouts = (
+                ((0.24, 0.39), (0.51, 0.31), (0.74, 0.4)),
+                ((0.18, 0.32), (0.47, 0.42), (0.78, 0.34)),
+                ((0.29, 0.35), (0.58, 0.38), (0.84, 0.29)),
+            )
+            for plant_x, plant_size in plant_layouts[variant]:
+                draw_plant(plant_x, 0.77, plant_size, False)
+            pot_x, pot_y = point(0.88, 0.8)
+            draw.ellipse((pot_x - scale // 12, pot_y - scale // 11, pot_x + scale // 12, pot_y + scale // 11), fill=(190, 133, 90), outline=ink, width=max(4, scale // 180))
+            draw.ellipse((pot_x - scale // 15, pot_y - scale // 12, pot_x + scale // 15, pot_y - scale // 20), fill=(111, 83, 65))
+            return
+
+        if category == "bottle_recycling":
+            draw.rectangle((0, int(height * 0.7), width, height), fill=(188, 161, 121))
+            draw_person(0.32, 0.9, 0.68, (214, 137, 93))
+            draw_bottle(0.62, 0.88, 0.52, False, True)
+            tool_x, tool_y = point(0.78, 0.57)
+            draw.line((tool_x, tool_y, tool_x + scale // 9, tool_y - scale // 9), fill=(83, 93, 102), width=max(8, scale // 70))
+            draw.ellipse((tool_x - scale // 45, tool_y - scale // 45, tool_x + scale // 45, tool_y + scale // 45), fill=(218, 184, 112))
+            return
+
+        if category == "watering_plants":
+            draw.rectangle((0, int(height * 0.7), width, height), fill=(139, 112, 84))
+            draw_plant(0.43, 0.89, 0.55, True)
+            draw_bottle(0.7, 0.73, 0.4, True)
+            for drop_x, drop_y in ((0.58, 0.63), (0.53, 0.69), (0.49, 0.75)):
+                dx, dy = point(drop_x, drop_y)
+                radius = max(8, scale // 42)
+                draw.ellipse((dx - radius, dy - radius, dx + radius, dy + radius), fill=(64, 164, 214))
+            return
+
+        if category == "rural_village":
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(166, 183, 118))
+            for house_x, roof_color in ((0.16, (190, 111, 84)), (0.48, (193, 149, 85)), (0.73, (174, 103, 83))):
+                hx, hy = point(house_x, 0.67)
+                house_w, house_h = int(width * 0.19), int(height * 0.25)
+                draw.rectangle((hx, hy - house_h, hx + house_w, hy), fill=(238, 217, 174), outline=ink, width=max(3, scale // 200))
+                draw.polygon(((hx - scale // 45, hy - house_h), (hx + house_w // 2, hy - house_h - scale // 8), (hx + house_w + scale // 45, hy - house_h)), fill=roof_color, outline=ink)
+                draw.rectangle((hx + house_w // 2 - scale // 20, hy - house_h // 2, hx + house_w // 2 + scale // 20, hy), fill=(126, 86, 64))
+            draw_tree(0.91, 0.78, 0.52)
+            draw_person(0.38, 0.9, 0.43, (85, 133, 174))
+            draw.line((0, int(height * 0.84), width, int(height * 0.84)), fill=(206, 188, 127), width=max(5, scale // 100))
+            return
+
+        if category == "community_gardening":
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(126, 171, 108))
+            for plant_x in (0.12, 0.9):
+                draw_tree(plant_x, 0.7, 0.48)
+            for person_x, shirt in ((0.22, (197, 124, 88)), (0.42, (87, 139, 179)), (0.63, (183, 132, 78)), (0.81, (155, 112, 175))):
+                draw_person(person_x, 0.91, 0.4, shirt)
+            for plant_x in (0.34, 0.53, 0.72):
+                draw_plant(plant_x, 0.88, 0.22, True)
+            return
+
+        if category in {"healthy_plants", "gardening", "abstract"}:
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(132, 180, 116))
+            if category == "abstract":
+                for plant_x, plant_size in (
+                    ((0.28, 0.24), (0.52, 0.43), (0.76, 0.62)),
+                    ((0.21, 0.31), (0.5, 0.55), (0.8, 0.47)),
+                    ((0.32, 0.35), (0.62, 0.6), (0.84, 0.36)),
+                )[variant]:
+                    draw_plant(plant_x, 0.88, plant_size, True)
+                return
+            healthy_layouts = (
+                ((0.19, 0.4), (0.43, 0.59), (0.68, 0.45), (0.87, 0.57)),
+                ((0.14, 0.54), (0.38, 0.38), (0.64, 0.59), (0.86, 0.42)),
+                ((0.17, 0.36), (0.46, 0.55), (0.73, 0.39), (0.91, 0.56)),
+            )
+            for plant_x, plant_size in healthy_layouts[variant]:
+                draw_plant(plant_x, 0.89, plant_size, True)
+            if category == "gardening":
+                draw_person(0.51, 0.93, 0.55, (190, 125, 88))
+            return
+
+        if category == "generic_people":
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(157, 184, 134))
+            draw_person(0.36, 0.92, 0.58, (90, 143, 181))
+            draw_person(0.64, 0.92, 0.58, (190, 125, 91))
+            return
+
+        if category == "meeting_teamwork":
+            draw.rectangle((0, 0, width, height), fill=(226, 233, 228))
+            draw.rectangle((0, int(height * 0.72), width, height), fill=(169, 139, 108))
+            draw.rectangle((int(width * 0.16), int(height * 0.12), int(width * 0.84), int(height * 0.48)), fill=(54, 111, 88), outline=ink, width=max(5, scale // 120))
+            for row, end in ((0.25, 0.65), (0.34, 0.73)):
+                draw.line((int(width * 0.23), int(height * row), int(width * end), int(height * row)), fill=(239, 243, 218), width=max(4, scale // 130))
+            draw.polygon((point(0.2, 0.68), point(0.8, 0.68), point(0.9, 0.82), point(0.1, 0.82)), fill=(149, 107, 79), outline=ink)
+            for person_x, shirt in ((0.29, (197, 124, 88)), (0.5, (87, 139, 179)), (0.71, (183, 132, 78))):
+                draw_person(person_x, 0.72, 0.34, shirt)
+            return
+
+        if category == "transportation":
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(94, 119, 105))
+            draw.rectangle((0, int(height * 0.76), width, int(height * 0.96)), fill=(75, 82, 92))
+            for x in (0.08, 0.34, 0.6, 0.86):
+                draw.rounded_rectangle((int(width * x), int(height * 0.84), int(width * (x + 0.12)), int(height * 0.87)), radius=scale // 100, fill=(239, 222, 154))
+            draw.rounded_rectangle((int(width * 0.22), int(height * 0.43), int(width * 0.78), int(height * 0.76)), radius=scale // 25, fill=(224, 155, 82), outline=ink, width=max(5, scale // 120))
+            draw.rectangle((int(width * 0.29), int(height * 0.48), int(width * 0.71), int(height * 0.61)), fill=(180, 221, 229), outline=ink, width=max(3, scale // 180))
+            for wheel_x in (0.34, 0.67):
+                wx, wy = point(wheel_x, 0.76)
+                radius = scale // 16
+                draw.ellipse((wx - radius, wy - radius, wx + radius, wy + radius), fill=(48, 56, 65), outline=(228, 232, 225), width=max(4, scale // 150))
+            return
+
+        if category == "cooking":
+            draw.rectangle((0, 0, width, height), fill=(237, 221, 193))
+            draw.rectangle((0, int(height * 0.66), width, height), fill=(154, 117, 87))
+            for x in (0.14, 0.56):
+                draw.rectangle((int(width * x), int(height * 0.18), int(width * (x + 0.29)), int(height * 0.48)), fill=(239, 235, 217), outline=ink, width=max(4, scale // 150))
+                draw.ellipse((int(width * (x + 0.22)), int(height * 0.28), int(width * (x + 0.25)), int(height * 0.31)), fill=accent)
+            draw.rectangle((int(width * 0.12), int(height * 0.64), int(width * 0.88), int(height * 0.72)), fill=(119, 91, 74))
+            draw.ellipse((int(width * 0.29), int(height * 0.48), int(width * 0.64), int(height * 0.67)), fill=(77, 85, 91), outline=ink, width=max(5, scale // 130))
+            draw.ellipse((int(width * 0.32), int(height * 0.49), int(width * 0.61), int(height * 0.63)), fill=(233, 185, 99))
+            draw_person(0.78, 0.92, 0.46, (183, 111, 93))
+            return
+
+        if category == "wellbeing":
+            draw.rectangle((0, int(height * 0.67), width, height), fill=(126, 175, 113))
+            draw_tree(0.16, 0.79, 0.55)
+            draw_tree(0.87, 0.79, 0.55)
+            draw_person(0.49, 0.91, 0.63, (80, 143, 182))
+            draw.ellipse((int(width * 0.68), int(height * 0.33), int(width * 0.8), int(height * 0.49)), fill=(238, 147, 134))
+            return
+
+        if category == "office":
+            draw.rectangle((0, 0, width, height), fill=(218, 232, 234))
+            draw.rectangle((int(width * 0.12), int(height * 0.15), int(width * 0.43), int(height * 0.52)), fill=(167, 211, 222), outline=(250, 250, 245), width=max(6, scale // 120))
+            draw.rectangle((0, int(height * 0.69), width, height), fill=(178, 149, 123))
+            draw.polygon((point(0.18, 0.62), point(0.82, 0.62), point(0.92, 0.73), point(0.08, 0.73)), fill=(146, 106, 79), outline=ink)
+            draw_person(0.48, 0.91, 0.58, (91, 140, 179))
+            draw.ellipse((int(width * 0.72), int(height * 0.52), int(width * 0.85), int(height * 0.66)), fill=(72, 151, 103))
+            return
 
     if category == "communication":
         phone = (int(width * 0.39), int(height * 0.25), int(width * 0.61), int(height * 0.7))
@@ -1362,7 +1821,10 @@ def _render_video(
     )
     if burn_in:
         subtitle_path = captions_path.as_posix().replace(":", r"\:").replace("'", r"\'")
+        caption_font = _caption_font_name(scenes)
         subtitle_style = (
+            f"FontName={caption_font}," if caption_font else ""
+        ) + (
             "FontSize=14,BorderStyle=3,BackColour=&H80000000,"
             "Outline=2,OutlineColour=&H80000000,Shadow=0,MarginL=48,MarginR=48,MarginV=58"
         )
@@ -1427,6 +1889,9 @@ def process_job(
     work_dir.mkdir(parents=True, exist_ok=True)
     audio_path: Path
     warnings: list[str] = []
+    tts_provider_used: str | None = None
+    tts_voice_used: str | None = None
+    input_language = request_data.get("language")
     try:
         if upload_path:
             audio_path = Path(upload_path)
@@ -1437,10 +1902,18 @@ def process_job(
         else:
             audio_path = work_dir / "narration.wav"
             script = request_data["script"] or " ".join(scene["text"] for scene in request_data.get("scenes", []))
-            _synthesize(script, audio_path, settings, request_data.get("voice") or settings.tts_voice)
+            input_language = input_language or detect_language(script)
+            tts_provider_used, tts_voice_used = _synthesize_for_language(
+                script,
+                audio_path,
+                settings,
+                input_language,
+                request_data.get("voice"),
+            )
 
         duration = _probe_duration(audio_path, settings)
         scenes = _scene_list(request_data, duration, audio_path, settings)
+        input_language = input_language or detect_language(" ".join(scene["text"] for scene in scenes))
         scenes, scene_planning_notice, scene_planning_provider = enrich_scene_visual_hints(scenes, settings)
         if scene_planning_notice:
             warnings.append(scene_planning_notice)
@@ -1803,14 +2276,14 @@ def process_job(
             )
         uses_tts = not request_data.get("audio_url") and upload_path is None
         uses_asr = not request_data.get("script") and not request_data.get("scenes")
-        espeak_binary = shutil.which("espeak-ng") or shutil.which("espeak")
+        espeak_binary = _find_espeak_binary()
         tts_version = (
             _command_version(espeak_binary, ["--version"])
-            if settings.tts_provider == "espeak"
+            if tts_provider_used == "espeak"
             else _package_version("pyttsx3")
-            if settings.tts_provider == "pyttsx3"
+            if tts_provider_used == "pyttsx3"
             else _package_version("kokoro")
-            if settings.tts_provider == "kokoro"
+            if tts_provider_used == "kokoro"
             else None
         ) if uses_tts else None
         asr_version = _package_version("faster-whisper") if uses_asr else None
@@ -1837,6 +2310,8 @@ def process_job(
                 )
         manifest = {
             "job_id": job_id,
+            "input_language": input_language,
+            "caption_language": input_language,
             "models": {
                 "visuals": {
                     "provider": (
@@ -1855,9 +2330,9 @@ def process_job(
                     ),
                 },
                 "tts": {
-                    "provider": settings.tts_provider if uses_tts else None,
+                    "provider": tts_provider_used if uses_tts else None,
                     "version": tts_version,
-                    "voice": request_data.get("voice") or settings.tts_voice if uses_tts else None,
+                    "voice": tts_voice_used if uses_tts else None,
                 },
                 "asr": {
                     "provider": settings.asr_provider if uses_asr else None,

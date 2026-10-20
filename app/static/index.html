@@ -3,29 +3,28 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0b111d">
-    <meta name="description" content="Create a narrated, captioned B-roll video from a script or audio.">
-    <title>IncuBrix Studio — B-roll video maker</title>
+    <meta name="theme-color" content="#10162b">
+    <meta name="description" content="Turn your script or voiceover into a polished B-roll video.">
+    <title>Broll Studio — bring your story to life</title>
     <link rel="stylesheet" href="/static/styles.css">
     <script src="/static/app.js" defer></script>
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="IncuBrix Studio home">
-        <span class="brand-mark" aria-hidden="true">i</span>
-        <span>incubrix<span class="brand-light">studio</span></span>
+      <a class="brand" href="/" aria-label="Broll Studio home">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>Broll<span class="brand-light">Studio</span></span>
       </a>
       <nav aria-label="Main navigation">
-        <a class="nav-link" href="/docs">API docs <span aria-hidden="true">↗</span></a>
-        <span class="status-pill"><span class="status-dot"></span> Local engine</span>
+        <span class="status-pill"><span class="status-dot"></span> Your next story starts here</span>
       </nav>
     </header>
 
     <main>
       <section class="hero">
-        <p class="eyebrow"><span class="eyebrow-line"></span> SCRIPT TO STORY</p>
-        <h1>Give your words<br>the <span class="gradient-text">visual story</span> they deserve.</h1>
-        <p class="hero-copy">Turn a script or voiceover into a narrated video with scene visuals, captions, and source notes.</p>
+        <p class="eyebrow"><span class="eyebrow-line"></span> YOUR STORY, IN MOTION</p>
+        <h1>Turn your ideas into<br><span class="gradient-text">beautiful B-roll.</span></h1>
+        <p class="hero-copy">Start with a script or voiceover. We’ll shape it into a polished video, ready to share.</p>
       </section>
 
       <section class="workspace" aria-label="Video creation workspace">
@@ -35,7 +34,7 @@
               <p class="eyebrow">CREATE A VIDEO</p>
               <h2>Start with your story</h2>
             </div>
-            <span class="step-label"><span class="step-number">01</span> INPUT</span>
+            <span class="step-label"><span class="step-number">01</span> YOUR STORY</span>
           </div>
 
           <fieldset class="mode-picker">
@@ -53,9 +52,20 @@
           </fieldset>
 
           <div id="script-panel" class="input-panel">
-            <label for="script" class="field-label">YOUR SCRIPT <span class="optional">— English works best</span></label>
+            <label for="script" class="field-label">YOUR SCRIPT</label>
             <textarea id="script" name="script" rows="6" maxlength="30000" placeholder="Saving money starts with a clear plan. Track your spending and choose one small goal to reach this month." required></textarea>
             <div class="field-footer"><span id="script-help">A few clear sentences help us build your scenes.</span><span id="char-count">0 / 30,000</span></div>
+          </div>
+
+          <div class="setting">
+            <label for="language" class="field-label">LANGUAGE</label>
+            <select id="language" name="language">
+              <option value="">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="ta">Tamil</option>
+            </select>
+            <small>Choose a language, or let us detect it for you.</small>
           </div>
 
           <div id="audio-panel" class="input-panel hidden">
@@ -103,21 +113,18 @@
             <label class="toggle-label"><input id="burn-in" type="checkbox" checked><span class="switch"></span><span><strong>Burn captions into video</strong><small>Always include a downloadable SRT file.</small></span></label>
           </div>
 
-          <div class="notice">
-            <span class="notice-icon" aria-hidden="true">i</span>
-            <p><strong>Stock footage is used when a relevant, verified clip is found; otherwise a scene-specific illustration keeps the video complete.</strong> The server searches configured Pixabay, Openverse, Wikimedia Commons, Internet Archive, and optional Pexels catalogs, filters licenses, and scores frames locally against the narration. Wikimedia Commons and Internet Archive work without API keys. No catalog can guarantee a suitable match for every story. Review footage relevance, licensing, and safety before publishing. Don’t submit sensitive audio to a public demo.</p>
-          </div>
+          <p class="creation-note"><span aria-hidden="true">✦</span> We’ll find the right visuals and keep every scene flowing with your narration.</p>
 
           <button id="submit-button" class="primary-button" type="submit">
             <span id="submit-label">Create my video</span><span class="button-arrow" aria-hidden="true">→</span>
           </button>
-          <p class="privacy-note">Your upload is processed by this server. Avoid confidential or personal information.</p>
+          <p class="privacy-note">Please don’t upload private or confidential material.</p>
         </form>
 
         <aside class="result-column" aria-label="Job status and results">
           <section id="progress-card" class="result-card progress-card">
             <div class="card-heading result-heading">
-              <div><p class="eyebrow">YOUR WORKSPACE</p><h2 id="result-title">Your next story starts here</h2></div>
+              <div><p class="eyebrow">VIDEO PREVIEW</p><h2 id="result-title">Your video will appear here</h2></div>
               <span id="result-state" class="state-badge idle">READY</span>
             </div>
             <div id="empty-state" class="empty-state">
@@ -125,35 +132,32 @@
                 <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span>
                 <span class="preview-sun"></span><span class="preview-hill hill-back"></span><span class="preview-hill hill-front"></span>
                 <span class="preview-play">▶</span>
-                <span class="preview-caption">YOUR STORY, IN MOTION</span>
+                <span class="preview-caption">YOUR NEXT BIG IDEA</span>
               </div>
-              <p>Your video and project files will appear here when the render is complete.</p>
+              <p>Your finished video will be ready to preview and download here.</p>
             </div>
             <div id="job-state" class="job-state hidden" aria-live="polite">
               <div class="progress-labels"><span id="progress-message">Preparing your project…</span><span id="progress-percent">0%</span></div>
               <div class="progress-track" role="progressbar" aria-label="Video render progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
-              <p id="job-id" class="job-id"></p>
-              <div id="error-box" class="error-box hidden" role="alert"></div>
-              <div id="warnings" class="warnings hidden"></div>
-              <div id="credits" class="credits hidden"></div>
+              <video id="video-preview" class="video-preview hidden" controls playsinline preload="metadata"></video>
+              <p id="friendly-message" class="friendly-message hidden" role="status"></p>
               <div id="downloads" class="downloads hidden"></div>
             </div>
           </section>
 
           <section class="info-card">
-            <p class="eyebrow">THE PROCESS</p>
-            <div class="process-step"><span class="process-number">01</span><span><strong>Understand your story</strong><small>Scenes are planned from your script or transcript.</small></span></div>
-            <div class="process-step"><span class="process-number">02</span><span><strong>Build each scene</strong><small>Original visuals are matched and timed to narration.</small></span></div>
-            <div class="process-step"><span class="process-number">03</span><span><strong>Export your video</strong><small>Download your video, captions and provenance files.</small></span></div>
+            <p class="eyebrow">MADE FOR YOUR IDEAS</p>
+            <div class="process-step"><span class="process-number">01</span><span><strong>Share your story</strong><small>Write a script or bring a voiceover you love.</small></span></div>
+            <div class="process-step"><span class="process-number">02</span><span><strong>Watch it come together</strong><small>Scenes and captions are shaped around your words.</small></span></div>
+            <div class="process-step"><span class="process-number">03</span><span><strong>Take it with you</strong><small>Preview your video, then download and share it.</small></span></div>
           </section>
         </aside>
       </section>
     </main>
 
     <footer class="footer">
-      <a class="brand footer-brand" href="/"><span class="brand-mark" aria-hidden="true">i</span><span>incubrix<span class="brand-light">studio</span></span></a>
-      <span>Local demo · Free, open-source components</span>
-      <a href="/docs">Developer API <span aria-hidden="true">↗</span></a>
+      <a class="brand footer-brand" href="/"><span class="brand-mark" aria-hidden="true">B</span><span>Broll<span class="brand-light">Studio</span></span></a>
+      <span>Made for stories worth sharing.</span>
     </footer>
   </body>
 </html>
