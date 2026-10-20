@@ -9,6 +9,7 @@ MODEL_NAME = "ViT-B-32"
 MODEL_PRETRAINED = "openai"
 MODEL_VERSION = "OpenCLIP ViT-B/32"
 MIN_VISUAL_SIMILARITY = 0.20
+MIN_CONTEXTUAL_FALLBACK_SIMILARITY = MIN_VISUAL_SIMILARITY - 0.03
 _MODEL_LOCK = threading.Lock()
 _SCORING_LOCK = threading.Lock()
 _SCORER: tuple[Any, Any, Any, Any] | None = None
@@ -132,3 +133,93 @@ def score_video_file(
         narration = (scene.get("text") or "").strip()
         text = f"Video footage showing {hint}. Narration: {narration}" if hint else f"Video footage showing: {narration}"
         return _frame_similarity(frame_paths, text)
+
+
+def choose_crop_anchor(
+    video_path: Path,
+    scene: dict[str, Any],
+    ratio: str,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+) -> tuple[float, float]:
+    """Choose a semantic crop offset from five candidate positions using OpenCLIP."""
+    import json
+    import tempfile
+
+    from PIL import Image
+
+    target_ratio = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0}[ratio]
+    try:
+        probe = subprocess.run(
+            [
+                ffprobe_path, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height", "-show_entries", "format=duration",
+                "-of", "json", str(video_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        metadata = json.loads(probe.stdout)
+        stream = metadata["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        duration = float(metadata["format"]["duration"])
+        if width <= 0 or height <= 0 or duration <= 0:
+            raise ValueError("Invalid video dimensions or duration")
+    except (OSError, subprocess.SubprocessError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise VisualRelevanceError("Could not inspect stock clip for semantic crop anchoring") from exc
+
+    with tempfile.TemporaryDirectory(prefix="incubrix-crop-") as temporary_directory:
+        frame_path = Path(temporary_directory) / "frame.jpg"
+        try:
+            subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-v", "error",
+                    "-ss", f"{max(0.0, min(duration * 0.5, duration - 0.05)):.3f}",
+                    "-i", str(video_path), "-frames:v", "1", "-y", str(frame_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            with Image.open(frame_path) as frame:
+                image = frame.convert("RGB")
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise VisualRelevanceError("Could not extract stock frame for semantic crop anchoring") from exc
+
+        frame_width, frame_height = image.size
+        source_ratio = frame_width / frame_height
+        if source_ratio > target_ratio:
+            crop_width = round(frame_height * target_ratio)
+            excess = max(0, frame_width - crop_width)
+            anchors = [(fraction, 0.5) for fraction in (0.0, 0.25, 0.5, 0.75, 1.0)]
+            crops = [
+                image.crop((round(excess * x, 0), 0, round(excess * x, 0) + crop_width, frame_height))
+                for x, _ in anchors
+            ]
+        else:
+            crop_height = round(frame_width / target_ratio)
+            excess = max(0, frame_height - crop_height)
+            anchors = [(0.5, fraction) for fraction in (0.0, 0.25, 0.5, 0.75, 1.0)]
+            crops = [
+                image.crop((0, round(excess * y, 0), frame_width, round(excess * y, 0) + crop_height))
+                for _, y in anchors
+            ]
+
+        torch, model, preprocess, tokenizer = _load_scorer()
+        hint = (scene.get("visual_hint") or "").strip()
+        narration = (scene.get("text") or "").strip()
+        text = f"Video footage showing {hint}. Narration: {narration}" if hint else f"Video footage showing: {narration}"
+        image_batch = torch.stack([preprocess(crop) for crop in crops])
+        text_batch = tokenizer([text])
+        try:
+            with _SCORING_LOCK, torch.inference_mode():
+                image_features = torch.nn.functional.normalize(model.encode_image(image_batch).float(), dim=-1)
+                text_features = torch.nn.functional.normalize(model.encode_text(text_batch).float(), dim=-1)
+                scores = image_features @ text_features.T
+            return anchors[int(scores[:, 0].argmax().item())]
+        except Exception as exc:
+            raise VisualRelevanceError("OpenCLIP could not select a semantic crop anchor") from exc

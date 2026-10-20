@@ -70,6 +70,9 @@ paths:
                 captions:
                   type: string
                   description: JSON object with burn_in and srt flags
+                callback_url:
+                  type: string
+                  format: uri
               anyOf:
                 - required: [audio_file]
                 - required: [audio_url]
@@ -191,6 +194,10 @@ components:
             srt:
               type: boolean
               default: true
+        callback_url:
+          type: [string, "null"]
+          format: uri
+          description: Optional public HTTPS endpoint for a signed terminal job callback
     Job:
       type: object
       required: [job_id, status, progress]
@@ -209,6 +216,17 @@ components:
           type: [object, "null"]
         error:
           type: [object, "null"]
+          properties:
+            code:
+              type: string
+              pattern: "^[A-Z0-9_]+$"
+            message:
+              type: string
+            retryable:
+              type: boolean
+            details:
+              type: [object, array, string, "null"]
+              description: Provider attempt records when licensed stock search is exhausted
     Error:
       type: object
       required: [error]

@@ -1,8 +1,6 @@
 import hashlib
 import json
-import logging
 import re
-import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -15,32 +13,18 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from starlette.datastructures import UploadFile
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
+from app.callbacks import validate_callback_url
 from app.db import JobDatabase
-from app.engine import ALLOWED_AUDIO_SUFFIXES, ALLOWED_RATIOS, EngineError, process_job
+from app.engine import ALLOWED_AUDIO_SUFFIXES, ALLOWED_RATIOS, EngineError
+from app.jobs import execute_job
+from app.logging_config import configure_logging
 from app.storage import ObjectStorage, create_storage
 
 
-class JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
-            "level": record.levelname.lower(),
-            "message": record.getMessage(),
-            "job_id": getattr(record, "job_id", None),
-            "correlation_id": getattr(record, "correlation_id", None),
-        }
-        return json.dumps(payload, ensure_ascii=False)
-
-
-logger = logging.getLogger("broll")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonLogFormatter())
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-logger.propagate = False
+logger = configure_logging()
 
 
 class SceneInput(BaseModel):
@@ -62,6 +46,14 @@ class JobInput(BaseModel):
     style: str | None = Field(default=None, max_length=500)
     avoid: list[str] = Field(default_factory=list, max_length=50)
     captions: CaptionOptions = Field(default_factory=CaptionOptions)
+    callback_url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("callback_url")
+    @classmethod
+    def validate_callback(cls, value: str | None) -> str | None:
+        if value:
+            validate_callback_url(value)
+        return value
 
     @field_validator("aspect_ratios")
     @classmethod
@@ -149,6 +141,7 @@ async def _read_request(request: Request, max_upload_bytes: int) -> tuple[JobInp
                 "style": form.get("style") or None,
                 "avoid": json.loads(form.get("avoid", "[]")),
                 "captions": json.loads(captions) if captions else {"burn_in": False, "srt": True},
+                "callback_url": form.get("callback_url") or None,
             }
         except APIError:
             raise
@@ -188,16 +181,36 @@ def create_app(
     configured = settings or Settings.from_env()
     job_db = database or JobDatabase(configured.database_path)
     object_storage = storage or create_storage(configured)
-    executor = ThreadPoolExecutor(max_workers=configured.worker_count, thread_name_prefix="broll-job")
+    if configured.job_execution_mode not in {"inline", "external"}:
+        raise ValueError("JOB_EXECUTION_MODE must be 'inline' or 'external'")
+    executor = (
+        ThreadPoolExecutor(max_workers=configured.worker_count, thread_name_prefix="broll-job")
+        if configured.job_execution_mode == "inline"
+        else None
+    )
     configured.data_dir.mkdir(parents=True, exist_ok=True)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         job_db.initialize()
-        for row in job_db.requeue_interrupted():
-            executor.submit(run_job, row["id"], json.loads(row["request_json"]), row["upload_path"], row["correlation_id"])
-        yield
-        executor.shutdown(wait=True, cancel_futures=False)
+        if executor:
+            for row in job_db.requeue_interrupted():
+                executor.submit(
+                    execute_job,
+                    row["id"],
+                    json.loads(row["request_json"]),
+                    row["upload_path"],
+                    row["correlation_id"],
+                    job_db,
+                    configured,
+                    object_storage,
+                )
+        try:
+            yield
+        finally:
+            if executor:
+                executor.shutdown(wait=True, cancel_futures=False)
+            job_db.close()
 
     app = FastAPI(
         title="IncuBrix Script and Voiceover to B-roll Video Engine",
@@ -238,33 +251,6 @@ def create_app(
         )
         return JSONResponse(status_code=500, content=_error("INTERNAL_ERROR", "An unexpected server error occurred"))
 
-    def run_job(job_id: str, request_data: dict[str, Any], upload_path: str | None, correlation_id: str) -> None:
-        job_db.update(job_id, status="running", progress=1)
-        logger.info("Job started", extra={"job_id": job_id, "correlation_id": correlation_id})
-        try:
-            result = process_job(
-                job_id,
-                request_data,
-                upload_path,
-                job_db,
-                configured,
-                object_storage,
-                lambda value: job_db.update(job_id, progress=value),
-            )
-            job_db.update(job_id, status="succeeded", progress=100, result=result)
-            logger.info("Job completed", extra={"job_id": job_id, "correlation_id": correlation_id})
-        except EngineError as exc:
-            error = {"code": exc.code, "message": exc.message, "retryable": exc.retryable}
-            job_db.update(job_id, status="failed", error=error)
-            logger.error("Job failed: %s", exc.message, extra={"job_id": job_id, "correlation_id": correlation_id})
-        except Exception:
-            logger.exception("Unexpected job failure", extra={"job_id": job_id, "correlation_id": correlation_id})
-            job_db.update(
-                job_id,
-                status="failed",
-                error={"code": "JOB_PROCESSING_FAILED", "message": "Unexpected job processing failure", "retryable": False},
-            )
-
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -290,6 +276,12 @@ def create_app(
         if not idempotency_key or len(idempotency_key) > 200 or not re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key):
             raise APIError(400, "IDEMPOTENCY_KEY_REQUIRED", "Provide an Idempotency-Key header (1-200 safe characters)")
         payload, audio_bytes, filename = await _read_request(request, configured.max_upload_bytes)
+        if payload.callback_url and not configured.callback_hmac_secret:
+            raise APIError(
+                503,
+                "CALLBACK_NOT_CONFIGURED",
+                "Signed callbacks require CALLBACK_HMAC_SECRET to be configured",
+            )
         request_data = payload.model_dump(mode="json")
         fingerprint = {
             "request": request_data,
@@ -319,7 +311,7 @@ def create_app(
                 upload_path,
                 request.state.correlation_id,
             )
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             duplicate = job_db.by_idempotency_key(idempotency_key)
             if upload_path:
                 Path(upload_path).unlink(missing_ok=True)
@@ -328,7 +320,17 @@ def create_app(
                     return JSONResponse(status_code=202, content=_public_job(duplicate))
                 raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for a different request")
             raise
-        executor.submit(run_job, job_id, request_data, upload_path, request.state.correlation_id)
+        if executor:
+            executor.submit(
+                execute_job,
+                job_id,
+                request_data,
+                upload_path,
+                request.state.correlation_id,
+                job_db,
+                configured,
+                object_storage,
+            )
         row = job_db.get(job_id)
         return JSONResponse(status_code=202, content=_public_job(row))
 

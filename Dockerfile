@@ -5,18 +5,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /service
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install ".[asr,vision]"
+RUN pip install ".[asr,vision,kokoro]"
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \
     && chown -R appuser:appuser /service
 ENV TORCH_HOME=/service/data/model-cache
+ENV HF_HOME=/service/data/model-cache/huggingface
 USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -26,7 +27,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends ffmpeg espeak-ng fonts-dejavu-core fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /service
 COPY pyproject.toml README.md ./

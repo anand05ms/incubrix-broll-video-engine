@@ -14,18 +14,31 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-localminio}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-localminio-change-me}
       S3_SECURE: ${S3_SECURE:-false}
-      TTS_PROVIDER: ${TTS_PROVIDER:-espeak}
-      TTS_VOICE: ${TTS_VOICE:-en}
+      TTS_PROVIDER: ${TTS_PROVIDER:-kokoro}
+      TTS_VOICE: ${TTS_VOICE:-af_heart}
       ASR_PROVIDER: ${ASR_PROVIDER:-faster-whisper}
-      ASR_MODEL: ${ASR_MODEL:-base}
+      ASR_MODEL: ${ASR_MODEL:-small}
       ASR_DEVICE: ${ASR_DEVICE:-cpu}
-      VISUAL_PROVIDER: ${VISUAL_PROVIDER:-pexels}
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-int8}
+      ASR_TRANSLATE_FOR_SEARCH: ${ASR_TRANSLATE_FOR_SEARCH:-true}
+      VISUAL_PROVIDER: ${VISUAL_PROVIDER:-auto}
       REQUIRE_STOCK_FOOTAGE: ${REQUIRE_STOCK_FOOTAGE:-true}
       PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
       TORCH_HOME: /service/data/model-cache
+      HF_HOME: /service/data/model-cache/huggingface
       MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-600}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
       WORKER_COUNT: ${WORKER_COUNT:-2}
+      JOB_EXECUTION_MODE: external
+      JOB_POLL_INTERVAL: ${JOB_POLL_INTERVAL:-1}
+      CALLBACK_HMAC_SECRET: ${CALLBACK_HMAC_SECRET:-}
+      VISUAL_PROVIDER_ORDER: ${VISUAL_PROVIDER_ORDER:-pixabay,openverse,wikimedia,pexels}
+      PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
+      OPENVERSE_CLIENT_ID: ${OPENVERSE_CLIENT_ID:-}
+      OPENVERSE_CLIENT_SECRET: ${OPENVERSE_CLIENT_SECRET:-}
+      GROQ_VISION_MODEL: ${GROQ_VISION_MODEL:-}
       MIN_SCENE_SECONDS: ${MIN_SCENE_SECONDS:-2.5}
     ports:
       - "${APP_PORT:-8000}:8000"
@@ -40,6 +53,52 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATA_DIR: /service/data
+      DATABASE_PATH: /service/data/jobs.sqlite3
+      FFMPEG_PATH: ffmpeg
+      FFPROBE_PATH: ffprobe
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-minio}
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_BUCKET: ${S3_BUCKET:-broll-results}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-localminio}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-localminio-change-me}
+      S3_SECURE: ${S3_SECURE:-false}
+      TTS_PROVIDER: ${TTS_PROVIDER:-kokoro}
+      TTS_VOICE: ${TTS_VOICE:-af_heart}
+      ASR_PROVIDER: ${ASR_PROVIDER:-faster-whisper}
+      ASR_MODEL: ${ASR_MODEL:-small}
+      ASR_DEVICE: ${ASR_DEVICE:-cpu}
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-int8}
+      ASR_TRANSLATE_FOR_SEARCH: ${ASR_TRANSLATE_FOR_SEARCH:-true}
+      VISUAL_PROVIDER: ${VISUAL_PROVIDER:-auto}
+      VISUAL_PROVIDER_ORDER: ${VISUAL_PROVIDER_ORDER:-pixabay,openverse,wikimedia,pexels}
+      REQUIRE_STOCK_FOOTAGE: ${REQUIRE_STOCK_FOOTAGE:-true}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
+      OPENVERSE_CLIENT_ID: ${OPENVERSE_CLIENT_ID:-}
+      OPENVERSE_CLIENT_SECRET: ${OPENVERSE_CLIENT_SECRET:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GROQ_VISION_MODEL: ${GROQ_VISION_MODEL:-}
+      CALLBACK_HMAC_SECRET: ${CALLBACK_HMAC_SECRET:-}
+      JOB_EXECUTION_MODE: external
+      JOB_POLL_INTERVAL: ${JOB_POLL_INTERVAL:-1}
+      TORCH_HOME: /service/data/model-cache
+      HF_HOME: /service/data/model-cache/huggingface
+      MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-600}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      WORKER_COUNT: ${WORKER_COUNT:-2}
+      MIN_SCENE_SECONDS: ${MIN_SCENE_SECONDS:-2.5}
+    volumes:
+      - broll-data:/service/data
+    depends_on:
+      minio:
+        condition: service_started
 
   minio:
     image: minio/minio:RELEASE.2025-02-07T23-21-09Z

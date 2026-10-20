@@ -129,7 +129,7 @@ h3 { margin: 0; font: 700 13px "Segoe UI", Arial, sans-serif; }
 .progress-track > span { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #91c85e, #8cddd0); transition: width .5s ease; }
 .job-id { overflow-wrap: anywhere; margin: 9px 0 0; color: #6f7e93; font: 8px ui-monospace, monospace; }
 .error-box, .warnings { margin-top: 13px; padding: 10px; border-radius: 7px; font-size: 9px; line-height: 1.55; }
-.error-box { border: 1px solid rgba(255, 133, 141, .3); background: rgba(255, 133, 141, .06); color: #ffc0c3; }
+.error-box { border: 1px solid rgba(255, 133, 141, .3); background: rgba(255, 133, 141, .06); color: #ffc0c3; white-space: pre-line; }
 .warnings { border: 1px solid rgba(232, 190, 110, .25); background: rgba(232, 190, 110, .06); color: #e7d29e; }
 .warnings p { margin: 0 0 5px; }
 .warnings p:last-child { margin-bottom: 0; }

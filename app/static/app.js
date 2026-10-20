@@ -108,7 +108,9 @@ function addExternalLink(parent, label, href) {
 
 function showCredits(timeline) {
   creditsBox.replaceChildren();
-  const stockScenes = (timeline?.scenes || []).filter((scene) => scene.clip?.source === "Pexels");
+  const stockScenes = (timeline?.scenes || []).filter(
+    (scene) => scene.clip?.source && scene.clip.source !== "procedural-illustration",
+  );
   if (!stockScenes.length) {
     creditsBox.classList.add("hidden");
     return;
@@ -117,29 +119,25 @@ function showCredits(timeline) {
   const heading = document.createElement("h3");
   heading.textContent = "Footage credits";
   creditsBox.append(heading);
-  const providerLine = document.createElement("p");
-  providerLine.append(document.createTextNode("Stock footage provided by "));
-  if (!addExternalLink(providerLine, "Pexels", "https://www.pexels.com/")) {
-    providerLine.append(document.createTextNode("Pexels"));
-  }
-  providerLine.append(document.createTextNode("."));
-  providerLine.append(document.createTextNode(" License: "));
-  addExternalLink(providerLine, "Pexels License", "https://www.pexels.com/license/");
-  creditsBox.append(providerLine);
-
   for (const scene of stockScenes) {
     const line = document.createElement("p");
-    line.append(document.createTextNode(`${scene.scene_id}: Video by `));
+    line.append(document.createTextNode(`${scene.scene_id}: ${scene.clip.source} · `));
     if (!addExternalLink(
       line,
-      scene.clip.photographer_name || "Pexels contributor",
-      scene.clip.photographer_url || "",
+      scene.clip.photographer_name || scene.clip.attribution || "Contributor",
+      scene.clip.photographer_url || scene.clip.source_url || "",
     )) {
-      line.append(document.createTextNode(scene.clip.photographer_name || "Pexels contributor"));
+      line.append(document.createTextNode(scene.clip.photographer_name || scene.clip.attribution || "Contributor"));
     }
-    line.append(document.createTextNode(" on Pexels · "));
+    line.append(document.createTextNode(" · "));
     if (!addExternalLink(line, "clip page", scene.clip.source_url || "")) {
       line.append(document.createTextNode("clip page unavailable"));
+    }
+    if (scene.clip.license) {
+      line.append(document.createTextNode(" · License: "));
+      if (!addExternalLink(line, scene.clip.license, scene.clip.license_url || "")) {
+        line.append(document.createTextNode(scene.clip.license));
+      }
     }
     creditsBox.append(line);
   }
@@ -194,7 +192,16 @@ async function pollJob(jobId) {
     } else if (payload.status === "failed") {
       progressText.textContent = "This render could not be completed.";
       setState("failed", "FAILED");
-      errorBox.textContent = `${payload.error?.code || "JOB_FAILED"}: ${payload.error?.message || "The job failed."}`;
+      const errorLines = [
+        `${payload.error?.code || "JOB_FAILED"}: ${payload.error?.message || "The job failed."}`,
+      ];
+      const providerAttempts = payload.error?.details?.provider_attempts;
+      if (Array.isArray(providerAttempts)) {
+        for (const attempt of providerAttempts) {
+          errorLines.push(`${attempt.provider}: ${attempt.status} — ${attempt.reason}`);
+        }
+      }
+      errorBox.textContent = errorLines.join("\n");
       errorBox.classList.remove("hidden");
       submitButton.disabled = false;
       submitLabel.textContent = "Try another render";
